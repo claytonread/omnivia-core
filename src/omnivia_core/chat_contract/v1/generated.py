@@ -130,7 +130,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = 16384
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = 'c7d23e840ade8f44125f95e0bedcc199174510e07d5e5a20483518dffb211573'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '7033c829479ab1829b3e2232865ae5ec8bc6b3fa7aba5d1b65467a3ee709c6de'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
@@ -181,7 +181,7 @@ BRIDGE_SNAPSHOT_ITEM_KINDS: Final[tuple[str, ...]] = (
     'tool_call',
 )
 
-#: The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 32 members.
+#: The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 33 members.
 CHAT_COMMAND_NAMES: Final[tuple[str, ...]] = (
     'CreateConversation',
     'CreateScopedConversation',
@@ -215,6 +215,7 @@ CHAT_COMMAND_NAMES: Final[tuple[str, ...]] = (
     'PlaceArtifactVersion',
     'CreateConversationShare',
     'ExportConversation',
+    'SetMessageFeedback',
 )
 
 #: The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType). Additive-decode point, 19 members.

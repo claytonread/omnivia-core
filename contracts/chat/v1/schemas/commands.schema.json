@@ -19,7 +19,7 @@
         "ReviewDecision", "SubmitHumanInput",
         "InvokeTool", "InvokeApp", "StartWorkflow", "StartAgentRun",
         "ReviseArtifact", "PlaceArtifactVersion",
-        "CreateConversationShare", "ExportConversation"
+        "CreateConversationShare", "ExportConversation", "SetMessageFeedback"
       ]
     },
     "CommandResultEnvelope": {
@@ -132,6 +132,39 @@
         "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
         "title": { "type": "string", "maxLength": 512 }
       }
+    },
+    "SetMessageFeedbackRequest": {
+      "title": "SetMessageFeedbackRequest",
+      "description": "Creates or replaces the authenticated actor's private workspace feedback for one committed assistant Message. This is conversation data only: settling it does not contact a provider, submit training data or mutate Message content. `expectedVersion` is absent for the first write and required to replace an existing record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "commandId", "conversationId", "messageId", "protocolVersion", "reaction", "reasons", "workspaceId"],
+      "properties": {
+        "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
+        "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "messageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "reaction": { "enum": ["helpful", "not_helpful"] },
+        "reasons": {
+          "type": "array",
+          "items": { "enum": ["incorrect", "wrong_source", "missing_evidence", "unsafe_or_private", "other"] },
+          "maxItems": 5,
+          "uniqueItems": true
+        },
+        "note": { "type": "string", "maxLength": 600 },
+        "expectedVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "reaction": { "const": "helpful" } }, "required": ["reaction"] },
+          "then": {
+            "properties": { "reasons": { "maxItems": 0 } },
+            "not": { "required": ["note"] }
+          }
+        }
+      ]
     },
     "ArchiveConversationRequest": {
       "title": "ArchiveConversationRequest",

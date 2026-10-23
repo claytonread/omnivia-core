@@ -99,6 +99,7 @@ __all__ = [
     "GenerationTextChunk",
     "Message",
     "MessageDerivation",
+    "MessageFeedback",
     "MessagePart",
     "OutboxEntry",
     "ProviderInvocation",
@@ -166,6 +167,8 @@ __all__ = [
     "read_generation_reasoning_summaries",
     "read_generation_text_chunks",
     "read_message",
+    "read_message_feedback",
+    "read_message_feedback_for_actor",
     "read_message_parts",
     "read_messages_by_conversation_sequence",
     "read_next_executable_fork_generation_job",
@@ -238,7 +241,11 @@ _MODEL_IDENTIFIER_BODY: Final = _IDENTIFIER_INITIAL | frozenset("/._:@-")
 
 
 def _require_provider_identifier(
-    label: str, value: object, *, limit: int = 128, body: frozenset[str] = _IDENTIFIER_BODY
+    label: str,
+    value: object,
+    *,
+    limit: int = 128,
+    body: frozenset[str] = _IDENTIFIER_BODY,
 ) -> str:
     if (
         not isinstance(value, str)
@@ -247,12 +254,16 @@ def _require_provider_identifier(
         or any(character not in body for character in value)
         or "://" in value
     ):
-        raise StorageError(f"a provider invocation {label} is outside the identifier bounds")
+        raise StorageError(
+            f"a provider invocation {label} is outside the identifier bounds"
+        )
     return value
 
 
 def _reject_json_constant(token: str) -> Any:
-    raise StorageError(f"a stored chat JSON value contains the non-finite constant {token!r}")
+    raise StorageError(
+        f"a stored chat JSON value contains the non-finite constant {token!r}"
+    )
 
 
 def _canonical_json_object(value: Mapping[str, Any]) -> str:
@@ -271,11 +282,17 @@ def _canonical_json_object_digest(value: Mapping[str, Any]) -> str:
 
 
 def _canonical_json_array(value: Sequence[Any]) -> str:
-    if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(value, Sequence):
+    if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(
+        value, Sequence
+    ):
         raise StorageError("a chat JSON array column requires a sequence")
     try:
         return json.dumps(
-            list(value), sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            list(value),
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
         )
     except (TypeError, ValueError) as error:
         raise StorageError(
@@ -305,7 +322,11 @@ def _verified_json_array(text: object, label: str) -> tuple[Any, ...]:
     if not isinstance(decoded, list):
         raise StorageError(f"a stored {label} is not a JSON array")
     canonical = json.dumps(
-        decoded, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        decoded,
+        sort_keys=True,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
     )
     if canonical != document:
         raise StorageError(f"a stored {label} is not canonical JSON")
@@ -314,7 +335,9 @@ def _verified_json_array(text: object, label: str) -> tuple[Any, ...]:
 
 def _require_cas_match(cursor: sqlite3.Cursor, label: str, identifier: str) -> None:
     if cursor.rowcount == 0:
-        raise StaleVersion(f"{label} {identifier!r} did not match its expected prior state")
+        raise StaleVersion(
+            f"{label} {identifier!r} did not match its expected prior state"
+        )
 
 
 # --- rows -----------------------------------------------------------------------
@@ -357,6 +380,21 @@ class Message:
     created_at_us: int
     committed_at_us: int
     tombstoned_at_us: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class MessageFeedback:
+    workspace_id: str
+    conversation_id: str
+    message_id: str
+    actor_id: str
+    reaction: str
+    reasons: tuple[str, ...]
+    note: str | None
+    schema_version: int
+    version: int
+    created_at_us: int
+    updated_at_us: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -892,6 +930,9 @@ class ConversationSnapshotInputs:
     queued_submissions: tuple[ActiveQueueEntry, ...]
     queued_submissions_truncated: bool
     drafts: tuple[Draft, ...] = ()
+    #: The authenticated actor's private feedback records, read in the same
+    #: revision window and filtered to the selected path by the projector.
+    message_feedback: tuple[MessageFeedback, ...] = ()
     #: C8. This conversation's tool calls, bounded, inside the SAME revision
     #: window as everything else here -- read within the one authoritative read
     #: rather than fetched afterwards, which is what keeps a snapshot exactly
@@ -1041,6 +1082,39 @@ class ChatWriter:
                 _canonical_json_object(payload),
                 provenance,
                 content_hash,
+                created_at_us,
+            ),
+        )
+
+    def insert_message_feedback(
+        self,
+        *,
+        conversation_id: str,
+        message_id: str,
+        actor_id: str,
+        reaction: str,
+        reasons: Sequence[str],
+        note: str | None,
+        created_at_us: int,
+        schema_version: int = 1,
+        version: int = 1,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_message_feedback "
+            "(workspace_id, conversation_id, message_id, actor_id, reaction, "
+            "reasons_json, note_text, schema_version, version, created_at_us, "
+            "updated_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                message_id,
+                actor_id,
+                reaction,
+                _canonical_json_array(reasons),
+                note,
+                schema_version,
+                version,
+                created_at_us,
                 created_at_us,
             ),
         )
@@ -1629,11 +1703,15 @@ class ChatWriter:
             or not isinstance(created_at_us, int)
             or created_at_us <= 0
         ):
-            raise StorageError("a provider invocation creation time is not a positive integer")
+            raise StorageError(
+                "a provider invocation creation time is not a positive integer"
+            )
         candidate = ProviderInvocation(
             workspace_id=self.workspace_id,
             invocation_id=_require_provider_identifier("invocation id", invocation_id),
-            conversation_id=_require_provider_identifier("conversation id", conversation_id),
+            conversation_id=_require_provider_identifier(
+                "conversation id", conversation_id
+            ),
             job_id=_require_provider_identifier("job id", job_id),
             generation_attempt_id=_require_provider_identifier(
                 "generation attempt id", generation_attempt_id
@@ -1911,7 +1989,9 @@ class ChatWriter:
                 policy_state,
                 _canonical_json_object(proposed_arguments),
                 proposed_digest,
-                None if post_policy_arguments is None else _canonical_json_object(post_policy_arguments),
+                None
+                if post_policy_arguments is None
+                else _canonical_json_object(post_policy_arguments),
                 post_policy_digest,
                 executed_arguments_digest,
                 result_id,
@@ -2224,7 +2304,38 @@ class ChatWriter:
                 expected_version,
             ),
         )
-        _require_cas_match(cursor, "view state", f"{conversation_id}/{actor_id}/{device_id}")
+        _require_cas_match(
+            cursor, "view state", f"{conversation_id}/{actor_id}/{device_id}"
+        )
+
+    def update_message_feedback(
+        self,
+        *,
+        message_id: str,
+        actor_id: str,
+        expected_version: int,
+        reaction: str,
+        reasons: Sequence[str],
+        note: str | None,
+        updated_at_us: int,
+    ) -> None:
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_message_feedback SET reaction = ?, reasons_json = ?, "
+            "note_text = ?, version = ?, updated_at_us = ? "
+            "WHERE workspace_id = ? AND message_id = ? AND actor_id = ? AND version = ?",
+            (
+                reaction,
+                _canonical_json_array(reasons),
+                note,
+                expected_version + 1,
+                updated_at_us,
+                self.workspace_id,
+                message_id,
+                actor_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "message feedback", f"{message_id}/{actor_id}")
 
     def update_draft(
         self,
@@ -2438,7 +2549,9 @@ class ChatWriter:
                 expected_version,
             ),
         )
-        _require_cas_match(cursor, "generation job status projection", generation_job_id)
+        _require_cas_match(
+            cursor, "generation job status projection", generation_job_id
+        )
 
     def update_direction(
         self,
@@ -2466,7 +2579,9 @@ class ChatWriter:
         transition is only valid inside the same transaction as its successor
         insert; see :meth:`append_direction`.
         """
-        reason_json = None if terminal_reason is None else _canonical_json_object(terminal_reason)
+        reason_json = (
+            None if terminal_reason is None else _canonical_json_object(terminal_reason)
+        )
         cursor = self.connection.execute(
             "UPDATE omnivia_chat_directions SET state = ?, version = ?, "
             "effective_boundary = ?, superseded_by_direction_id = ?, "
@@ -2599,7 +2714,9 @@ class ChatWriter:
             (
                 state,
                 policy_state,
-                None if post_policy_arguments is None else _canonical_json_object(post_policy_arguments),
+                None
+                if post_policy_arguments is None
+                else _canonical_json_object(post_policy_arguments),
                 post_policy_digest,
                 executed_arguments_digest,
                 result_id,
@@ -2648,7 +2765,9 @@ class ChatWriter:
         _require_cas_match(cursor, "outbox entry", str(outbox_cursor))
 
 
-def transaction_local_writer(connection: sqlite3.Connection, *, workspace_id: str) -> ChatWriter:
+def transaction_local_writer(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> ChatWriter:
     """The Chat writes, for a caller that already holds a fenced transaction.
 
     Opens no transaction and validates no authority; everything it issues lands in
@@ -2670,7 +2789,10 @@ def chat_writer(
 ) -> Iterator[ChatWriter]:
     """One fenced transaction, and the Chat writes that may be issued into it."""
     with fenced_transaction(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ):
         yield transaction_local_writer(connection, workspace_id=workspace_id)
 
@@ -2687,7 +2809,10 @@ def append_conversation(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_conversation(**fields)
 
@@ -2701,7 +2826,10 @@ def append_message(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_message(**fields)
 
@@ -2715,7 +2843,10 @@ def append_message_part(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_message_part(**fields)
 
@@ -2729,7 +2860,10 @@ def append_message_derivation(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_message_derivation(**fields)
 
@@ -2743,7 +2877,10 @@ def append_branch(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_branch(**fields)
 
@@ -2757,7 +2894,10 @@ def append_branch_head_event(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_branch_head_event(**fields)
 
@@ -2771,7 +2911,10 @@ def insert_view_state(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.insert_view_state(**fields)
 
@@ -2785,7 +2928,10 @@ def insert_draft(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.insert_draft(**fields)
 
@@ -2799,7 +2945,10 @@ def append_queued_submission(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_queued_submission(**fields)
 
@@ -2813,7 +2962,10 @@ def append_generation_job(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_generation_job(**fields)
 
@@ -2827,7 +2979,10 @@ def append_generation_attempt(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_generation_attempt(**fields)
 
@@ -2841,7 +2996,10 @@ def append_generation_event(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_generation_event(**fields)
 
@@ -2855,7 +3013,10 @@ def insert_generation_job_status_projection(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.insert_generation_job_status_projection(**fields)
 
@@ -2869,7 +3030,10 @@ def append_generation_attempt_outcome(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_generation_attempt_outcome(**fields)
 
@@ -2883,7 +3047,10 @@ def append_generation_text_chunk(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_generation_text_chunk(**fields)
 
@@ -2897,7 +3064,10 @@ def append_generation_reasoning_summary(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_generation_reasoning_summary(**fields)
 
@@ -2934,17 +3104,18 @@ def append_request_manifest_once(
         generation_attempt_id=generation_attempt_id,
     )
     if existing is not None:
-        if (
-            existing.manifest_digest != expected_digest
-            or _canonical_json_object(existing.manifest_body)
-            != _canonical_json_object(manifest_body)
-        ):
+        if existing.manifest_digest != expected_digest or _canonical_json_object(
+            existing.manifest_body
+        ) != _canonical_json_object(manifest_body):
             raise RequestManifestConflict(
                 f"generation attempt {generation_attempt_id!r} already has a different request manifest"
             )
         return existing
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_request_manifest(
             conversation_id=conversation_id,
@@ -2995,7 +3166,10 @@ def append_provider_invocation_once(
     to write it inside a transaction already held.
     """
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         return writer.append_provider_invocation(
             invocation_id=invocation_id,
@@ -3021,7 +3195,10 @@ def append_direction(
     successor insert), because two standalone transactions cannot work.
     """
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_direction(**fields)
 
@@ -3035,7 +3212,10 @@ def append_generation_continuation(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_generation_continuation(**fields)
 
@@ -3049,7 +3229,10 @@ def append_chat_turn(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_chat_turn(**fields)
 
@@ -3063,7 +3246,10 @@ def append_chat_turn_step(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_chat_turn_step(**fields)
 
@@ -3077,7 +3263,10 @@ def append_chat_tool_call(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_chat_tool_call(**fields)
 
@@ -3091,7 +3280,10 @@ def append_chat_tool_result(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_chat_tool_result(**fields)
 
@@ -3105,7 +3297,10 @@ def insert_queue_order_projection(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.insert_queue_order_projection(**fields)
 
@@ -3119,7 +3314,10 @@ def append_outbox_entry(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.append_outbox_entry(**fields)
 
@@ -3133,7 +3331,10 @@ def update_conversation(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_conversation(**fields)
 
@@ -3147,7 +3348,10 @@ def update_branch_head(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_branch_head(**fields)
 
@@ -3161,7 +3365,10 @@ def update_view_state(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_view_state(**fields)
 
@@ -3175,7 +3382,10 @@ def update_draft(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_draft(**fields)
 
@@ -3189,7 +3399,10 @@ def update_queued_submission(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_queued_submission(**fields)
 
@@ -3203,7 +3416,10 @@ def update_queued_submission_content(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_queued_submission_content(**fields)
 
@@ -3217,7 +3433,10 @@ def update_generation_job(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_generation_job(**fields)
 
@@ -3231,7 +3450,10 @@ def update_generation_job_status_projection(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_generation_job_status_projection(**fields)
 
@@ -3249,7 +3471,10 @@ def update_direction(
     the successor insert, or the deferred successor foreign key fails the commit.
     """
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_direction(**fields)
 
@@ -3263,7 +3488,10 @@ def update_queue_order_projection(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_queue_order_projection(**fields)
 
@@ -3277,7 +3505,10 @@ def update_chat_turn(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_chat_turn(**fields)
 
@@ -3291,7 +3522,10 @@ def update_chat_turn_step(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_chat_turn_step(**fields)
 
@@ -3305,7 +3539,10 @@ def update_chat_tool_call(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_chat_tool_call(**fields)
 
@@ -3319,7 +3556,10 @@ def update_outbox_delivery(
     **fields: Any,
 ) -> None:
     with chat_writer(
-        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
     ) as writer:
         writer.update_outbox_delivery(**fields)
 
@@ -3413,6 +3653,62 @@ def read_message(
         (workspace_id, conversation_id, message_id),
     ).fetchone()
     return None if row is None else _message_from_row(row)
+
+
+_MESSAGE_FEEDBACK_COLUMNS: Final = (
+    "workspace_id, conversation_id, message_id, actor_id, reaction, reasons_json, "
+    "note_text, schema_version, version, created_at_us, updated_at_us"
+)
+
+
+def _message_feedback_from_row(row: tuple[Any, ...]) -> MessageFeedback:
+    reasons = _verified_json_array(row[5], "message feedback reasons")
+    if any(not isinstance(reason, str) for reason in reasons):
+        raise StorageError("stored message feedback reasons are not strings")
+    return MessageFeedback(
+        workspace_id=str(row[0]),
+        conversation_id=str(row[1]),
+        message_id=str(row[2]),
+        actor_id=str(row[3]),
+        reaction=str(row[4]),
+        reasons=tuple(str(reason) for reason in reasons),
+        note=None if row[6] is None else str(row[6]),
+        schema_version=int(row[7]),
+        version=int(row[8]),
+        created_at_us=int(row[9]),
+        updated_at_us=int(row[10]),
+    )
+
+
+def read_message_feedback(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    message_id: str,
+    actor_id: str,
+) -> MessageFeedback | None:
+    row = connection.execute(
+        f"SELECT {_MESSAGE_FEEDBACK_COLUMNS} FROM omnivia_chat_message_feedback "
+        "WHERE workspace_id = ? AND message_id = ? AND actor_id = ?",
+        (workspace_id, message_id, actor_id),
+    ).fetchone()
+    return None if row is None else _message_feedback_from_row(row)
+
+
+def read_message_feedback_for_actor(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    actor_id: str,
+) -> tuple[MessageFeedback, ...]:
+    rows = connection.execute(
+        f"SELECT {_MESSAGE_FEEDBACK_COLUMNS} FROM omnivia_chat_message_feedback "
+        "WHERE workspace_id = ? AND conversation_id = ? AND actor_id = ? "
+        "ORDER BY message_id",
+        (workspace_id, conversation_id, actor_id),
+    ).fetchall()
+    return tuple(_message_feedback_from_row(row) for row in rows)
 
 
 def read_messages_by_conversation_sequence(
@@ -3613,7 +3909,9 @@ def _draft_from_row(row: tuple[Any, ...]) -> Draft:
         source_message_id=row[6],
         text_content=row[7],
         references=_verified_json_array(row[8], "chat draft references"),
-        target=None if row[9] is None else _verified_json_object(row[9], "chat draft target"),
+        target=None
+        if row[9] is None
+        else _verified_json_object(row[9], "chat draft target"),
         stashed_from_draft_id=row[10],
         schema_version=row[11],
         version=row[12],
@@ -3703,7 +4001,9 @@ def _queued_submission_from_row(row: tuple[Any, ...]) -> QueuedSubmission:
         queued_submission_id=row[3],
         queue_sequence=row[4],
         branch_id=row[5],
-        editable_parts=_verified_json_array(row[6], "chat queued submission editable parts"),
+        editable_parts=_verified_json_array(
+            row[6], "chat queued submission editable parts"
+        ),
         references=_verified_json_array(row[7], "chat queued submission references"),
         idempotency_key=row[8],
         state=row[9],
@@ -3935,7 +4235,9 @@ def read_active_queue_for_actor(
             updated_at_us=row[25],
         )
         entries.append(
-            ActiveQueueEntry(submission=submission, order=order, generation_job_id=row[26])
+            ActiveQueueEntry(
+                submission=submission, order=order, generation_job_id=row[26]
+            )
         )
     return tuple(entries)
 
@@ -4120,7 +4422,9 @@ _GENERATION_ATTEMPT_OUTCOME_COLUMNS = (
 )
 
 
-def _generation_attempt_outcome_from_row(row: tuple[Any, ...]) -> GenerationAttemptOutcome:
+def _generation_attempt_outcome_from_row(
+    row: tuple[Any, ...],
+) -> GenerationAttemptOutcome:
     return GenerationAttemptOutcome(
         workspace_id=row[0],
         conversation_id=row[1],
@@ -4269,7 +4573,9 @@ _DIRECTION_COLUMNS = (
 def _direction_from_row(row: tuple[Any, ...]) -> Direction:
     content = _verified_json_object(row[10], "chat direction content")
     if "sha256:" + sha256(str(row[10]).encode("utf-8")).hexdigest() != row[11]:
-        raise StorageError("a stored chat direction content digest does not match its content")
+        raise StorageError(
+            "a stored chat direction content digest does not match its content"
+        )
     return Direction(
         workspace_id=row[0],
         conversation_id=row[1],
@@ -4414,7 +4720,9 @@ def _request_manifest_from_row(row: tuple[Any, ...]) -> RequestManifest:
     body = _verified_json_object(row[11], "chat request manifest body")
     digest = _canonical_json_object_digest(body)
     if digest != row[10]:
-        raise StorageError("a stored chat request manifest digest does not match its body")
+        raise StorageError(
+            "a stored chat request manifest digest does not match its body"
+        )
     return RequestManifest(
         workspace_id=row[0],
         conversation_id=row[1],
@@ -4571,7 +4879,9 @@ def _chat_tool_call_from_row(row: tuple[Any, ...]) -> ChatToolCall:
     proposed_arguments = _verified_json_object(row[12], "chat tool proposed arguments")
     proposed_digest = _canonical_json_object_digest(proposed_arguments)
     if proposed_digest != row[13]:
-        raise StorageError("a stored chat tool proposed-arguments digest does not match")
+        raise StorageError(
+            "a stored chat tool proposed-arguments digest does not match"
+        )
     post_policy_arguments = (
         None
         if row[14] is None
@@ -4656,7 +4966,9 @@ def read_chat_tool_calls_for_generation_job(
     by `tool_call_id` (a hash) would reorder them. The order is deterministic, which
     the Message's own `content_hash` needs, because it is computed over the parts.
     """
-    columns = ", ".join(f"c.{name.strip()}" for name in _CHAT_TOOL_CALL_COLUMNS.split(","))
+    columns = ", ".join(
+        f"c.{name.strip()}" for name in _CHAT_TOOL_CALL_COLUMNS.split(",")
+    )
     rows = connection.execute(
         f"SELECT {columns} FROM omnivia_chat_tool_calls c "
         "JOIN omnivia_chat_turn_steps s "
@@ -4710,7 +5022,9 @@ def _chat_tool_result_from_row(row: tuple[Any, ...]) -> ChatToolResult:
     result_payload = _verified_json_object(row[9], "chat tool result payload")
     digest = _canonical_json_object_digest(result_payload)
     if digest != row[10]:
-        raise StorageError("a stored chat tool result digest does not match its payload")
+        raise StorageError(
+            "a stored chat tool result digest does not match its payload"
+        )
     return ChatToolResult(
         workspace_id=row[0],
         conversation_id=row[1],
@@ -5028,7 +5342,9 @@ def read_conversation_snapshot_inputs(
             branch = (
                 None
                 if selected is None
-                else read_branch(connection, workspace_id=workspace_id, branch_id=selected)
+                else read_branch(
+                    connection, workspace_id=workspace_id, branch_id=selected
+                )
             )
             if branch is not None and branch.conversation_id != conversation_id:
                 branch = None
@@ -5120,6 +5436,12 @@ def read_conversation_snapshot_inputs(
                     conversation_id=conversation_id,
                     actor_id=actor_id,
                     device_id=device_id,
+                ),
+                message_feedback=read_message_feedback_for_actor(
+                    connection,
+                    workspace_id=workspace_id,
+                    conversation_id=conversation_id,
+                    actor_id=actor_id,
                 ),
                 tool_calls=tool_calls,
                 tool_calls_truncated=tool_calls_truncated,

@@ -92,6 +92,7 @@ from omnivia_core_runtime.storage.chat import (
     GenerationJob,
     GenerationJobStatusProjection,
     Message,
+    MessageFeedback,
     MessagePart,
     ViewState,
     read_actor_directions_for_branch,
@@ -231,11 +232,17 @@ def _decode(
     device_id = "" if "deviceId" not in query else _identifier(query, "deviceId")
 
     if query["workspaceId"] != context.workspace_id:
-        raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        raise _invalid(
+            "workspaceId", "is not the workspace this request was authorized for"
+        )
     if query["conversationId"] != request.conversation_id:
-        raise _invalid("conversationId", "is not the conversation this request addresses")
+        raise _invalid(
+            "conversationId", "is not the conversation this request addresses"
+        )
     if query["actorId"] != context.principal:
-        raise _invalid("actorId", "is not the principal this request was authenticated as")
+        raise _invalid(
+            "actorId", "is not the principal this request was authenticated as"
+        )
     if query["requestId"] != context.request.metadata.request_id:
         raise _invalid("requestId", "is not the identifier of this request")
     return _SnapshotQuery(
@@ -418,6 +425,23 @@ def _view_state(view_state: ViewState) -> Mapping[str, Any]:
     return document
 
 
+def _message_feedback(feedback: MessageFeedback) -> Mapping[str, Any]:
+    document: dict[str, Any] = {
+        "workspaceId": feedback.workspace_id,
+        "conversationId": feedback.conversation_id,
+        "messageId": feedback.message_id,
+        "actorId": feedback.actor_id,
+        "reaction": feedback.reaction,
+        "reasons": list(feedback.reasons),
+        "schemaVersion": feedback.schema_version,
+        "version": feedback.version,
+        "createdAt": _timestamp(feedback.created_at_us),
+        "updatedAt": _timestamp(feedback.updated_at_us),
+    }
+    _optional(document, "note", feedback.note)
+    return document
+
+
 def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
     """One `QueuedSubmissionProjection`: the actor's own row, joined to its order.
 
@@ -501,7 +525,9 @@ def _internal() -> OperationError:
     return OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_INTERNAL)
 
 
-def _succeeded_consistently(job: GenerationJob, status: GenerationJobStatusProjection) -> bool:
+def _succeeded_consistently(
+    job: GenerationJob, status: GenerationJobStatusProjection
+) -> bool:
     """Whether a `succeeded` projection is one the foundation row can stand behind.
 
     Two legitimate histories exist. A first-attempt success leaves the 0029 row
@@ -628,10 +654,15 @@ def _direction(direction: Direction) -> Mapping[str, Any]:
         }
     elif direction.state in ("superseded", "rejected", "cancelled"):
         stored = direction.terminal_reason
-        if stored is None or direction.terminal_at_us is None or not set(stored) <= {
-            "code",
-            "safeMessage",
-        }:
+        if (
+            stored is None
+            or direction.terminal_at_us is None
+            or not set(stored)
+            <= {
+                "code",
+                "safeMessage",
+            }
+        ):
             raise _internal()
         occurred_at = _timestamp(direction.terminal_at_us)
         reason: dict[str, Any] = {"code": stored.get("code"), "occurredAt": occurred_at}
@@ -687,9 +718,7 @@ def _generation_jobs(
     return jobs
 
 
-def _tool_call(
-    call: Any, wait: Any | None, actor_id: str
-) -> Mapping[str, Any]:
+def _tool_call(call: Any, wait: Any | None, actor_id: str) -> Mapping[str, Any]:
     """One tool call, with its wait projected ONLY to an admitted responder.
 
     The split is deliberate and is the disclosure decision this projection
@@ -751,7 +780,9 @@ def _tool_call(
         "expiresAt": _timestamp(wait.expires_at_us),
     }
     member = "prompt" if wait.kind == "human_input" else "actionSummary"
-    check = validate_human_input_prompt if member == "prompt" else validate_action_summary
+    check = (
+        validate_human_input_prompt if member == "prompt" else validate_action_summary
+    )
     try:
         review[member] = check(wait.prompt)
     except (ChatWaitConflict, MalformedToolProposal):
@@ -781,21 +812,31 @@ def _directions(
         actor_id=query.actor_id,
     )
     if len(rows) > _SNAPSHOT_DIRECTION_LIMIT:
-        raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_DIRECTION_OVERFLOW)
+        raise OperationError(
+            ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_DIRECTION_OVERFLOW
+        )
     for row in rows:
-        if (
-            (row.workspace_id, row.conversation_id, row.branch_id, row.actor_id)
-            != (query.workspace_id, query.conversation_id, branch.branch_id, query.actor_id)
-            or row.generation_job_id not in job_ids
-        ):
+        if (row.workspace_id, row.conversation_id, row.branch_id, row.actor_id) != (
+            query.workspace_id,
+            query.conversation_id,
+            branch.branch_id,
+            query.actor_id,
+        ) or row.generation_job_id not in job_ids:
             raise _internal()
     ordered = sorted(
-        rows, key=lambda row: (row.generation_job_id, row.direction_sequence, row.direction_id)
+        rows,
+        key=lambda row: (
+            row.generation_job_id,
+            row.direction_sequence,
+            row.direction_id,
+        ),
     )
     return [_direction(row) for row in ordered]
 
 
-def _read_snapshot(connection: sqlite3.Connection, query: _SnapshotQuery) -> dict[str, Any]:
+def _read_snapshot(
+    connection: sqlite3.Connection, query: _SnapshotQuery
+) -> dict[str, Any]:
     """Every read one snapshot is composed from, inside the caller's transaction."""
     inputs = read_conversation_snapshot_inputs(
         connection,
@@ -847,8 +888,17 @@ def _read_snapshot(connection: sqlite3.Connection, query: _SnapshotQuery) -> dic
     # the one authoritative read (`read_conversation_snapshot_inputs` now carries
     # them), so a snapshot remains exactly one observation of one revision window.
     if inputs.drafts:
-        snapshot["composerDrafts"] = [
-            composer_draft(draft) for draft in inputs.drafts
+        snapshot["composerDrafts"] = [composer_draft(draft) for draft in inputs.drafts]
+    path_sequences = {
+        message.message_id: message.conversation_sequence for message in inputs.path
+    }
+    feedback = [
+        row for row in inputs.message_feedback if row.message_id in path_sequences
+    ]
+    if feedback:
+        snapshot["messageFeedback"] = [
+            _message_feedback(row)
+            for row in sorted(feedback, key=lambda row: path_sequences[row.message_id])
         ]
     # C8. The calls come from the one authoritative read; each call's WAIT is
     # resolved by `replay_tool_call`, which is the authoritative assembly --
@@ -981,6 +1031,10 @@ def resolve_draft_readback(
         workspace_id=context.workspace_id,
         draft_id=draft_id,
     )
-    if draft is None or draft.conversation_id != conversation_id or draft.actor_id != actor_id:
+    if (
+        draft is None
+        or draft.conversation_id != conversation_id
+        or draft.actor_id != actor_id
+    ):
         return ChatDraftResult(found=False).to_wire()
     return ChatDraftResult(found=True, draft=composer_draft(draft)).to_wire()

@@ -144,6 +144,7 @@ from omnivia_core_runtime.storage.chat import (
     read_generation_job,
     read_generation_job_status_projection,
     read_message,
+    read_message_feedback,
     read_messages_by_conversation_sequence,
     read_queue_order_for_conversation,
     read_queue_order_projection,
@@ -169,6 +170,7 @@ __all__ = [
     "REORDER_QUEUED_SUBMISSION_COMMAND",
     "RETRY_GENERATION_COMMAND",
     "SAVE_DRAFT_COMMAND",
+    "SET_MESSAGE_FEEDBACK_COMMAND",
     "STAGE_ATTACHMENT_COMMAND",
     "STOP_GENERATION_COMMAND",
     "SUBMIT_MESSAGE_COMMAND",
@@ -193,6 +195,7 @@ DISCARD_DRAFT_COMMAND: Final = "DiscardDraft"
 #: `commands.schema.json`; what was missing was a resolver, so every
 #: `RenameConversation` answered `dependency_unavailable`.
 RENAME_CONVERSATION_COMMAND: Final = "RenameConversation"
+SET_MESSAGE_FEEDBACK_COMMAND: Final = "SetMessageFeedback"
 #: C8. The two names admitted into `ChatCommandName` on 10 October 2026.
 REVIEW_DECISION_COMMAND: Final = "ReviewDecision"
 SUBMIT_HUMAN_INPUT_COMMAND: Final = "SubmitHumanInput"
@@ -288,6 +291,25 @@ _RENAME_CONVERSATION_FIELDS: Final = frozenset(
         "title",
     }
 )
+_SET_MESSAGE_FEEDBACK_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "messageId",
+        "actorId",
+        "reaction",
+        "reasons",
+        "note",
+        "expectedVersion",
+    }
+)
+_MESSAGE_FEEDBACK_REACTIONS: Final = frozenset({"helpful", "not_helpful"})
+_MESSAGE_FEEDBACK_REASONS: Final = frozenset(
+    {"incorrect", "wrong_source", "missing_evidence", "unsafe_or_private", "other"}
+)
+_MAX_MESSAGE_FEEDBACK_NOTE_LENGTH: Final = 600
 _AMENDMENT_FIELDS: Final = frozenset(
     {
         "protocolVersion",
@@ -430,9 +452,7 @@ _PART_FIELDS: Final = frozenset({"type", "payload", "visibility"})
 _REFERENCE_FIELDS: Final = frozenset({"referenceId", "sourceRevision"})
 _TARGET_FIELDS: Final = frozenset({"kind", "referenceId"})
 
-_MESSAGE_CONVERSATION: Final = (
-    "the conversation this command names is not an active conversation of this workspace"
-)
+_MESSAGE_CONVERSATION: Final = "the conversation this command names is not an active conversation of this workspace"
 _MESSAGE_BRANCH: Final = (
     "the branch this command names is not an open branch of that conversation"
 )
@@ -570,6 +590,21 @@ class _RenameConversation:
     conversation_id: str
     actor_id: str
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SetMessageFeedback:
+    """One decoded `SetMessageFeedbackRequest`."""
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    message_id: str
+    actor_id: str
+    reaction: str
+    reasons: tuple[str, ...]
+    note: str | None
+    expected_version: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -718,8 +753,9 @@ def _derivable_identifier(document: Mapping[str, Any], field: str) -> str:
         # two, and 0029 bounds a durable identifier at 128 characters. Refusing here is
         # what keeps the derivation from silently truncating one.
         raise _invalid(
-            field, f"is longer than the {_DERIVED_IDENTIFIER_MAX} characters this build "
-            "can derive durable identifiers from"
+            field,
+            f"is longer than the {_DERIVED_IDENTIFIER_MAX} characters this build "
+            "can derive durable identifiers from",
         )
     return value
 
@@ -801,9 +837,7 @@ def _positive_integer(
     return value
 
 
-def _array(
-    document: Mapping[str, Any], field: str, *, max_items: int
-) -> Sequence[Any]:
+def _array(document: Mapping[str, Any], field: str, *, max_items: int) -> Sequence[Any]:
     value = document.get(field)
     if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Sequence):
         raise _invalid(field, f"is not an array of up to {max_items} items")
@@ -857,7 +891,9 @@ def _attachment_references(attachments: Sequence[Any]) -> tuple[Mapping[str, Any
     for index, item in enumerate(attachments):
         _reference(item, f"attachmentReferences[{index}]")
     if len({item["referenceId"] for item in attachments}) != len(attachments):
-        raise _invalid("attachmentReferences", "names the same reference more than once")
+        raise _invalid(
+            "attachmentReferences", "names the same reference more than once"
+        )
     return tuple(_plain_json(item) for item in attachments)
 
 
@@ -886,8 +922,13 @@ def _provider_route(command: Mapping[str, Any]) -> _ProviderRoute | None:
     if unknown:
         raise _invalid(f"{field}.{unknown[0]}", "is not a field of this route")
     connection_id = value.get("connectionId")
-    if not isinstance(connection_id, str) or _IDENTIFIER.fullmatch(connection_id) is None:
-        raise _invalid(f"{field}.connectionId", "is not a provider connection identifier")
+    if (
+        not isinstance(connection_id, str)
+        or _IDENTIFIER.fullmatch(connection_id) is None
+    ):
+        raise _invalid(
+            f"{field}.connectionId", "is not a provider connection identifier"
+        )
     model_id = value.get("modelId")
     if not isinstance(model_id, str) or _PROVIDER_MODEL_ID.fullmatch(model_id) is None:
         raise _invalid(f"{field}.modelId", "is not a provider model identifier")
@@ -927,7 +968,9 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
 
     attachments = _array(
         command, "attachmentReferences", max_items=_MAX_REFERENCE_COUNT
@@ -1024,7 +1067,9 @@ def _decode_enqueue(command: Mapping[str, Any]) -> _EnqueueMessage:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
 
     attachments = _array(
         command, "attachmentReferences", max_items=_MAX_REFERENCE_COUNT
@@ -1068,7 +1113,9 @@ def _decode_update_queue(command: Mapping[str, Any]) -> _UpdateQueuedSubmission:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
 
     parts = command.get("editableParts")
     if (
@@ -1107,7 +1154,9 @@ def _decode_create_conversation(command: Mapping[str, Any]) -> _CreateConversati
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     _utc_timestamp(command, "requestedAt")
     title = command.get("title")
     if "title" in command and (
@@ -1153,13 +1202,11 @@ def _decode_rename_conversation(command: Mapping[str, Any]) -> _RenameConversati
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     title = command.get("title")
-    if (
-        not isinstance(title, str)
-        or len(title) > _MAX_TITLE_LENGTH
-        or "\x00" in title
-    ):
+    if not isinstance(title, str) or len(title) > _MAX_TITLE_LENGTH or "\x00" in title:
         raise _invalid(
             "title", f"is not a string of at most {_MAX_TITLE_LENGTH} characters"
         )
@@ -1169,6 +1216,69 @@ def _decode_rename_conversation(command: Mapping[str, Any]) -> _RenameConversati
         conversation_id=_identifier(command, "conversationId"),
         actor_id=_identifier(command, "actorId"),
         title=title,
+    )
+
+
+def _decode_set_message_feedback(command: Mapping[str, Any]) -> _SetMessageFeedback:
+    """Decode one bounded private message-feedback mutation."""
+    unknown = sorted(set(command) - _SET_MESSAGE_FEEDBACK_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
+
+    reaction = command.get("reaction")
+    if reaction not in _MESSAGE_FEEDBACK_REACTIONS:
+        raise _invalid("reaction", "is not a supported message feedback reaction")
+    raw_reasons = _array(command, "reasons", max_items=5)
+    reasons: list[str] = []
+    for index, reason in enumerate(raw_reasons):
+        if not isinstance(reason, str) or reason not in _MESSAGE_FEEDBACK_REASONS:
+            raise _invalid(
+                f"reasons[{index}]", "is not a supported message feedback reason"
+            )
+        if reason in reasons:
+            raise _invalid(f"reasons[{index}]", "duplicates an earlier reason")
+        reasons.append(reason)
+
+    note_value = command.get("note")
+    note: str | None = None
+    if "note" in command:
+        if (
+            not isinstance(note_value, str)
+            or len(note_value) > _MAX_MESSAGE_FEEDBACK_NOTE_LENGTH
+            or "\x00" in note_value
+        ):
+            raise _invalid(
+                "note",
+                f"is not a string of at most {_MAX_MESSAGE_FEEDBACK_NOTE_LENGTH} characters",
+            )
+        note = note_value
+    if reaction == "helpful" and (reasons or note is not None):
+        raise _invalid("reaction", "helpful feedback cannot carry reasons or a note")
+
+    expected_version = (
+        _positive_integer(command, "expectedVersion")
+        if "expectedVersion" in command
+        else None
+    )
+    return _SetMessageFeedback(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        message_id=_identifier(command, "messageId"),
+        actor_id=_identifier(command, "actorId"),
+        reaction=str(reaction),
+        reasons=tuple(reasons),
+        note=note,
+        expected_version=expected_version,
     )
 
 
@@ -1224,7 +1334,9 @@ def _protocol(command: Mapping[str, Any]) -> None:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
 
 
 def _request_version(command: Mapping[str, Any]) -> int:
@@ -1253,7 +1365,9 @@ def _optional_audit_ref(command: Mapping[str, Any]) -> str | None:
         or not 1 <= len(value) <= _MAX_AUDIT_REF
         or "\x00" in value
     ):
-        raise _invalid("auditRef", f"is not a string of 1 to {_MAX_AUDIT_REF} characters")
+        raise _invalid(
+            "auditRef", f"is not a string of 1 to {_MAX_AUDIT_REF} characters"
+        )
     return value
 
 
@@ -1275,7 +1389,9 @@ def _decode_review_decision(command: Mapping[str, Any]) -> _ReviewDecision:
         raise _invalid("decision", "is not a Review decision")
     for field in ("targetActionDigest", "targetResourceRevision"):
         if field not in command:
-            raise _invalid(field, "is required, and is null where the wait carries none")
+            raise _invalid(
+                field, "is required, and is null where the wait carries none"
+            )
     digest = command["targetActionDigest"]
     if digest is not None and (
         not isinstance(digest, str) or _ACTION_DIGEST.fullmatch(digest) is None
@@ -1290,7 +1406,9 @@ def _decode_review_decision(command: Mapping[str, Any]) -> _ReviewDecision:
         expected_request_version=_request_version(command),
         target_action_digest=digest,
         target_resource_revision=_optional_revision(command, "targetResourceRevision"),
-        current_resource_revision=_optional_revision(command, "currentResourceRevision"),
+        current_resource_revision=_optional_revision(
+            command, "currentResourceRevision"
+        ),
         audit_ref=_optional_audit_ref(command),
     )
 
@@ -1351,7 +1469,9 @@ def _decode_amendment(command: Mapping[str, Any]) -> _MessageAmendment:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     _utc_timestamp(command, "requestedAt")
     for field in ("attachmentReferences", "contextReferences"):
         value = command.get(field)
@@ -1400,7 +1520,9 @@ def _decode_regenerate_response(command: Mapping[str, Any]) -> _RegenerateRespon
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _RegenerateResponse(
         command_id=_derivable_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -1423,7 +1545,9 @@ def _decode_conversation_path(command: Mapping[str, Any]) -> _ConversationPath:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _ConversationPath(
         command_id=_derivable_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -1451,7 +1575,9 @@ def _decode_conversation_lifecycle(
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _ConversationLifecycle(
         command_id=_derivable_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -1470,7 +1596,9 @@ def _decode_reorder(command: Mapping[str, Any]) -> _ReorderQueuedSubmission:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _ReorderQueuedSubmission(
         command_id=_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -1492,7 +1620,9 @@ def _decode_cancel_queue(command: Mapping[str, Any]) -> _CancelQueuedSubmission:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _CancelQueuedSubmission(
         command_id=_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -1512,7 +1642,9 @@ def _decode_stop_generation(command: Mapping[str, Any]) -> _StopGeneration:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _StopGeneration(
         command_id=_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -1532,7 +1664,9 @@ def _decode_retry_generation(command: Mapping[str, Any]) -> _RetryGeneration:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _RetryGeneration(
         command_id=_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -1716,7 +1850,9 @@ def _attachment_parts(pinned: Sequence[PinnedAttachment]) -> tuple[_Part, ...]:
     return tuple(parts)
 
 
-def _attachment_entries(pinned: Sequence[PinnedAttachment]) -> tuple[Mapping[str, Any], ...]:
+def _attachment_entries(
+    pinned: Sequence[PinnedAttachment],
+) -> tuple[Mapping[str, Any], ...]:
     """The tagged entries a queued row stores for its pinned attachment references.
 
     `.reference` and never the :class:`PinnedAttachment` itself: a stored entry is read
@@ -1775,7 +1911,8 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
                 raise ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT) from None
             if (
                 not _same_references(queued_references, request.attachment_references)
-                or _queued_content_hash(queued_row.editable_parts) != request.content_hash
+                or _queued_content_hash(queued_row.editable_parts)
+                != request.content_hash
             ):
                 # A stale renderer's view of this row's content, identity, head or
                 # attachments is a governed conflict requiring resnapshot, never a
@@ -1881,7 +2018,9 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
             title_source=conversation.title_source,
             # The first send is what gives a conversation its default branch; a
             # continuation leaves whatever the conversation already selected alone.
-            default_branch_id=branch_id if first_send else conversation.default_branch_id,
+            default_branch_id=branch_id
+            if first_send
+            else conversation.default_branch_id,
             updated_at_us=now,
         )
         writer.append_message(
@@ -1894,7 +2033,9 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
             conversation_sequence=sequence,
             schema_version=1,
             content_hash=(
-                _queued_content_hash([_editable_part_wire(part) for part in message_parts])
+                _queued_content_hash(
+                    [_editable_part_wire(part) for part in message_parts]
+                )
                 if attachment_parts
                 else request.content_hash
             ),
@@ -1981,7 +2122,9 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
                 actor_id=request.actor_id,
                 queue_sequence=queue_sequence,
                 branch_id=branch_id,
-                editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
+                editable_parts=tuple(
+                    _editable_part_wire(part) for part in request.parts
+                ),
                 references=_attachment_entries(pinned),
                 idempotency_key=request.command_id,
                 created_at_us=now,
@@ -2218,6 +2361,87 @@ def _rename_conversation(request: _RenameConversation) -> ChatCommand:
     return command
 
 
+_MESSAGE_FEEDBACK_TARGET: Final = "the message feedback record changed or does not match this request's expected version"
+_MESSAGE_FEEDBACK_MESSAGE: Final = (
+    "the message this feedback names is not a committed standard assistant message"
+)
+
+
+def _set_message_feedback(request: _SetMessageFeedback) -> ChatCommand:
+    """Create or compare-and-set the actor's private feedback for one Message."""
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None or conversation.state != "active":
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        message = read_message(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+            message_id=request.message_id,
+        )
+        if (
+            message is None
+            or message.role != "assistant"
+            or message.completion_status != "complete"
+            or message.visibility != "standard"
+            or message.tombstoned_at_us is not None
+        ):
+            raise ChatAggregateConflict(_MESSAGE_FEEDBACK_MESSAGE)
+        existing = read_message_feedback(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            message_id=request.message_id,
+            actor_id=request.actor_id,
+        )
+        if existing is None:
+            if request.expected_version is not None:
+                raise ChatAggregateConflict(_MESSAGE_FEEDBACK_TARGET)
+            writer.insert_message_feedback(
+                conversation_id=request.conversation_id,
+                message_id=request.message_id,
+                actor_id=request.actor_id,
+                reaction=request.reaction,
+                reasons=request.reasons,
+                note=request.note,
+                created_at_us=settlement.settled_at_us,
+            )
+            version = 1
+        else:
+            if (
+                existing.conversation_id != request.conversation_id
+                or request.expected_version != existing.version
+            ):
+                raise ChatAggregateConflict(_MESSAGE_FEEDBACK_TARGET)
+            try:
+                writer.update_message_feedback(
+                    message_id=request.message_id,
+                    actor_id=request.actor_id,
+                    expected_version=existing.version,
+                    reaction=request.reaction,
+                    reasons=request.reasons,
+                    note=request.note,
+                    updated_at_us=settlement.settled_at_us,
+                )
+            except StaleVersion as error:
+                raise ChatAggregateConflict(_MESSAGE_FEEDBACK_TARGET) from error
+            version = existing.version + 1
+        return _ack(
+            SET_MESSAGE_FEEDBACK_COMMAND,
+            request.command_id,
+            request.conversation_id,
+            result_ref=f"message-feedback:{request.message_id}:{version}",
+        )
+
+    return command
+
+
 #: 0029 makes `archived` and `tombstoned` BOTH terminal: its update trigger
 #: aborts any state change out of either. So a conversation is archived or
 #: tombstoned from `active` and from nowhere else -- an archived conversation
@@ -2287,9 +2511,7 @@ _MESSAGE_NOT_ASSISTANT: Final = (
 _MESSAGE_NO_PARENT: Final = (
     "the assistant message this command names has no user parent to regenerate under"
 )
-_MESSAGE_BRANCH_EXISTS: Final = (
-    "the branch this command would create already exists"
-)
+_MESSAGE_BRANCH_EXISTS: Final = "the branch this command would create already exists"
 
 
 _MESSAGE_NOT_USER: Final = (
@@ -2947,7 +3169,9 @@ def _update_queued_submission(request: _UpdateQueuedSubmission) -> ChatCommand:
             writer.update_queued_submission_content(
                 queued_submission_id=request.queued_submission_id,
                 expected_version=request.expected_version,
-                editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
+                editable_parts=tuple(
+                    _editable_part_wire(part) for part in request.parts
+                ),
                 updated_at_us=settlement.settled_at_us,
             )
         except StaleVersion as error:
@@ -2994,7 +3218,9 @@ def _reorder_queued_submission(request: _ReorderQueuedSubmission) -> ChatCommand
                 now_us=settlement.settled_at_us,
             )
         except StaleVersion as error:
-            raise ChatAggregateConflict("the queued submission order version moved") from error
+            raise ChatAggregateConflict(
+                "the queued submission order version moved"
+            ) from error
         return _ack(
             REORDER_QUEUED_SUBMISSION_COMMAND,
             request.command_id,
@@ -3105,7 +3331,9 @@ def _move_queue_projection(
 
     free_position = max(occupied_by_anyone) + 1
     if free_position > 100_000:
-        raise ChatAggregateConflict("the queued submission order has no temporary position")
+        raise ChatAggregateConflict(
+            "the queued submission order has no temporary position"
+        )
 
     moving_expected = expected_version
     writer.update_queue_order_projection(
@@ -3119,14 +3347,22 @@ def _move_queue_projection(
 
     if target_position < old_position:
         shifted = sorted(
-            (row for row in rows if target_position <= row.queue_position < old_position),
+            (
+                row
+                for row in rows
+                if target_position <= row.queue_position < old_position
+            ),
             key=lambda row: row.queue_position,
             reverse=True,
         )
         delta = 1
     else:
         shifted = sorted(
-            (row for row in rows if old_position < row.queue_position <= target_position),
+            (
+                row
+                for row in rows
+                if old_position < row.queue_position <= target_position
+            ),
             key=lambda row: row.queue_position,
         )
         delta = -1
@@ -3184,7 +3420,9 @@ def _stop_generation(request: _StopGeneration) -> ChatCommand:
         writer: ChatWriter, settlement: MutationSettlementContext
     ) -> Mapping[str, Any]:
         job = read_generation_job(
-            writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            generation_job_id=request.job_id,
         )
         if (
             job is None
@@ -3194,7 +3432,9 @@ def _stop_generation(request: _StopGeneration) -> ChatCommand:
         ):
             raise ChatAggregateConflict("the generation job is not running")
         status = read_generation_job_status_projection(
-            writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            generation_job_id=request.job_id,
         )
         if (
             status is None
@@ -3202,11 +3442,23 @@ def _stop_generation(request: _StopGeneration) -> ChatCommand:
             or status.state != "running"
             or status.current_attempt_id != job.current_attempt_id
         ):
-            raise ChatAggregateConflict("the generation job has no running status projection")
+            raise ChatAggregateConflict(
+                "the generation job has no running status projection"
+            )
         events = read_generation_events(
-            writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            generation_job_id=request.job_id,
         )
-        if any(event.event_type in {"chat.generation.succeeded", "chat.generation.failed", "chat.generation.cancelled"} for event in events):
+        if any(
+            event.event_type
+            in {
+                "chat.generation.succeeded",
+                "chat.generation.failed",
+                "chat.generation.cancelled",
+            }
+            for event in events
+        ):
             raise ChatAggregateConflict("the generation job is already terminal")
         sequence = job.last_event_sequence + 1
         now = settlement.settled_at_us
@@ -3257,7 +3509,9 @@ def _stop_generation(request: _StopGeneration) -> ChatCommand:
             updated_at_us=now,
             finished_at_us=now,
         )
-        return _ack(STOP_GENERATION_COMMAND, request.command_id, request.conversation_id)
+        return _ack(
+            STOP_GENERATION_COMMAND, request.command_id, request.conversation_id
+        )
 
     return command
 
@@ -3304,9 +3558,9 @@ def _retry_generation(request: _RetryGeneration) -> ChatCommand:
             workspace_id=writer.workspace_id,
             generation_job_id=request.job_id,
         )
-        next_attempt_number = max(
-            (attempt.attempt_number for attempt in attempts), default=0
-        ) + 1
+        next_attempt_number = (
+            max((attempt.attempt_number for attempt in attempts), default=0) + 1
+        )
         generation_attempt_id = retry_generation_attempt_id(
             request.command_id, request.job_id
         )
@@ -3428,7 +3682,9 @@ def _decode_save_draft(command: Mapping[str, Any]) -> _SaveDraft:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
 
     mode = command.get("mode")
     if mode not in _DRAFT_MODES:
@@ -3455,12 +3711,16 @@ def _decode_save_draft(command: Mapping[str, Any]) -> _SaveDraft:
     ):
         raise _invalid("text", "is not a draft's composition text")
 
-    attachments = _array(command, "attachmentReferences", max_items=_MAX_REFERENCE_COUNT)
+    attachments = _array(
+        command, "attachmentReferences", max_items=_MAX_REFERENCE_COUNT
+    )
     contexts = _array(command, "contextReferences", max_items=_MAX_REFERENCE_COUNT)
     for index, item in enumerate(attachments):
         _reference(item, f"attachmentReferences[{index}]")
     if len({item["referenceId"] for item in attachments}) != len(attachments):
-        raise _invalid("attachmentReferences", "names the same reference more than once")
+        raise _invalid(
+            "attachmentReferences", "names the same reference more than once"
+        )
     for index, item in enumerate(contexts):
         _reference(item, f"contextReferences[{index}]")
 
@@ -3508,7 +3768,9 @@ def _decode_discard_draft(command: Mapping[str, Any]) -> _DiscardDraft:
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _DiscardDraft(
         command_id=_derivable_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -3595,20 +3857,19 @@ def _save_draft(request: _SaveDraft, blobs_root: Path | None) -> ChatCommand:
                 workspace_id=writer.workspace_id,
                 draft_id=draft_id,
             )
-            if (
-                named is not None
-                and (
-                    named.conversation_id != request.conversation_id
-                    or named.actor_id != request.actor_id
-                    or named.mode != request.mode
-                )
+            if named is not None and (
+                named.conversation_id != request.conversation_id
+                or named.actor_id != request.actor_id
+                or named.mode != request.mode
             ):
                 raise ChatAggregateConflict(
                     "the named draft belongs to another conversation, actor or mode"
                 )
         else:
-            draft_id = existing.draft_id if existing is not None else (
-                f"{request.command_id}.draft"
+            draft_id = (
+                existing.draft_id
+                if existing is not None
+                else (f"{request.command_id}.draft")
             )
 
         references = _draft_attachment_entries(
@@ -3699,6 +3960,7 @@ def _discard_draft(request: _DiscardDraft) -> ChatCommand:
 
     return command
 
+
 # --- C7A: staged attachments -----------------------------------------------------------
 
 _ATTACHMENT_FIELDS: Final = frozenset(
@@ -3742,12 +4004,16 @@ _ATTACHMENT_MEDIA_TYPES: Final = frozenset(
     }
 )
 
-_ATTACHMENT_UNKNOWN: Final = "the attachment reference does not name a file this workspace holds"
-_ATTACHMENT_UNAVAILABLE: Final = "the file this attachment names is not currently available"
-_ATTACHMENT_TOO_LARGE: Final = "the file this attachment names is larger than an attachment may be"
-_ATTACHMENT_MEDIA: Final = (
-    "the media type of the file this attachment names is not an accepted attachment type"
+_ATTACHMENT_UNKNOWN: Final = (
+    "the attachment reference does not name a file this workspace holds"
 )
+_ATTACHMENT_UNAVAILABLE: Final = (
+    "the file this attachment names is not currently available"
+)
+_ATTACHMENT_TOO_LARGE: Final = (
+    "the file this attachment names is larger than an attachment may be"
+)
+_ATTACHMENT_MEDIA: Final = "the media type of the file this attachment names is not an accepted attachment type"
 _ATTACHMENT_REVISION: Final = (
     "the file's source revision is not the revision this attachment was staged at"
 )
@@ -3758,9 +4024,7 @@ _ATTACHMENT_DUPLICATE: Final = "the attachment is already staged in this convers
 _ATTACHMENT_LIMIT: Final = (
     "the actor already holds the most staged attachments a conversation allows"
 )
-_ATTACHMENT_NOT_STAGED: Final = (
-    "the attachment reference is not an active staged attachment of this conversation and actor"
-)
+_ATTACHMENT_NOT_STAGED: Final = "the attachment reference is not an active staged attachment of this conversation and actor"
 _ATTACHMENT_DRAFT: Final = (
     "the draft this command names is not the draft this attachment is staged for"
 )
@@ -3791,7 +4055,9 @@ def _decode_attachment_command(command: Mapping[str, Any]) -> _AttachmentCommand
     try:
         negotiate_protocol_version(protocol_version)
     except UnsupportedProtocolVersionError as error:
-        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+        raise _invalid(
+            "protocolVersion", "is not this contract's wire version"
+        ) from error
     return _AttachmentCommand(
         command_id=_derivable_identifier(command, "commandId"),
         workspace_id=_identifier(command, "workspaceId"),
@@ -3857,9 +4123,7 @@ def _stage_attachment(request: _AttachmentCommand, blobs_root: Path) -> ChatComm
         if existing is not None and existing.state == "active":
             raise ChatAggregateConflict(_ATTACHMENT_DUPLICATE)
         revision = evidence.content_checksum
-        result_ref = (
-            f"{_ATTACHMENT_RESULT_REF_PREFIX}{request.attachment_reference_id}@{revision}"
-        )
+        result_ref = f"{_ATTACHMENT_RESULT_REF_PREFIX}{request.attachment_reference_id}@{revision}"
         if len(revision) > _MAX_SOURCE_REVISION or len(result_ref) > _MAX_RESULT_REF:
             raise ChatAggregateConflict(_ATTACHMENT_REVISION_UNSTATABLE)
         if evidence.content_length_bytes > _MAX_ATTACHMENT_BYTES:
@@ -3988,13 +4252,17 @@ def _remove_staged_attachment(request: _AttachmentCommand) -> ChatCommand:
                     updated_at_us=settlement.settled_at_us,
                 )
         return _ack(
-            REMOVE_STAGED_ATTACHMENT_COMMAND, request.command_id, request.conversation_id
+            REMOVE_STAGED_ATTACHMENT_COMMAND,
+            request.command_id,
+            request.conversation_id,
         )
 
     return command
 
 
-_ATTACHMENT_REPEATED: Final = "the request names the same attachment reference more than once"
+_ATTACHMENT_REPEATED: Final = (
+    "the request names the same attachment reference more than once"
+)
 _ATTACHMENT_REFUSALS: Final = {
     "duplicate": _ATTACHMENT_REPEATED,
     "not_staged": _ATTACHMENT_NOT_STAGED,
@@ -4192,7 +4460,9 @@ def _submit_steering_input(request: _SubmitSteeringInput) -> ChatCommand:
             (
                 candidate
                 for candidate in read_generation_attempts(
-                    connection, workspace_id=workspace_id, generation_job_id=request.job_id
+                    connection,
+                    workspace_id=workspace_id,
+                    generation_job_id=request.job_id,
                 )
                 if candidate.generation_attempt_id == attempt_id
             ),
@@ -4215,11 +4485,17 @@ def _submit_steering_input(request: _SubmitSteeringInput) -> ChatCommand:
             connection, workspace_id=workspace_id, generation_job_id=request.job_id
         )
         direction_id = steering_direction_id(workspace_id, request.command_id)
-        pending = [direction for direction in directions if direction.state == "pending"]
+        pending = [
+            direction for direction in directions if direction.state == "pending"
+        ]
         superseded = None
         if request.supersedes_direction_id is not None:
             superseded = next(
-                (d for d in directions if d.direction_id == request.supersedes_direction_id),
+                (
+                    d
+                    for d in directions
+                    if d.direction_id == request.supersedes_direction_id
+                ),
                 None,
             )
             if (
@@ -4231,10 +4507,9 @@ def _submit_steering_input(request: _SubmitSteeringInput) -> ChatCommand:
                 or superseded.target_attempt_id != attempt_id
             ):
                 raise ChatAggregateConflict(_STEERING_DIRECTION)
-        if (
-            any(direction.direction_id == direction_id for direction in directions)
-            or len(pending) != (superseded is not None)
-        ):
+        if any(
+            direction.direction_id == direction_id for direction in directions
+        ) or len(pending) != (superseded is not None):
             raise ChatAggregateConflict(_STEERING_DIRECTION)
 
         job_sequence = max((d.direction_sequence for d in directions), default=0) + 1
@@ -4252,7 +4527,11 @@ def _submit_steering_input(request: _SubmitSteeringInput) -> ChatCommand:
                 generation_event_sequence=sequence,
                 trigger_message_id=job.trigger_message_id,
                 cursor=_generation_cursor(request.job_id, sequence),
-                payload={"directionId": identity, "directionVersion": version, "state": state},
+                payload={
+                    "directionId": identity,
+                    "directionVersion": version,
+                    "state": state,
+                },
                 occurred_at_us=now,
                 schema_version=1,
             )
@@ -4282,7 +4561,9 @@ def _submit_steering_input(request: _SubmitSteeringInput) -> ChatCommand:
                 supersedes_direction_id=request.supersedes_direction_id,
             )
             if superseded is not None:
-                state_changed(superseded.direction_id, superseded.version + 1, "superseded")
+                state_changed(
+                    superseded.direction_id, superseded.version + 1, "superseded"
+                )
             state_changed(direction_id, 1, "pending")
             writer.update_generation_job(
                 generation_job_id=request.job_id,
@@ -4359,7 +4640,9 @@ def resolve_chat_command(
     if request.command_name == REVIEW_DECISION_COMMAND:
         review = _decode_review_decision(request.command)
         if review.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if review.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4375,7 +4658,9 @@ def resolve_chat_command(
     if request.command_name == SUBMIT_HUMAN_INPUT_COMMAND:
         human = _decode_submit_human_input(request.command)
         if human.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if human.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4386,7 +4671,9 @@ def resolve_chat_command(
     if request.command_name == RENAME_CONVERSATION_COMMAND:
         rename = _decode_rename_conversation(request.command)
         if rename.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if rename.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4401,10 +4688,25 @@ def resolve_chat_command(
         if context.request.metadata.idempotency_key != rename.command_id:
             raise _invalid("commandId", "is not the idempotency key of this request")
         return _rename_conversation(rename)
+    if request.command_name == SET_MESSAGE_FEEDBACK_COMMAND:
+        feedback = _decode_set_message_feedback(request.command)
+        if feedback.workspace_id != context.workspace_id:
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
+        if feedback.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        if context.request.metadata.idempotency_key != feedback.command_id:
+            raise _invalid("commandId", "is not the idempotency key of this request")
+        return _set_message_feedback(feedback)
     if request.command_name == COMMIT_MESSAGE_AMENDMENT_COMMAND:
         amendment = _decode_amendment(request.command)
         if amendment.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if amendment.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4415,7 +4717,9 @@ def resolve_chat_command(
     if request.command_name == REGENERATE_RESPONSE_COMMAND:
         regenerate = _decode_regenerate_response(request.command)
         if regenerate.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if regenerate.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4429,7 +4733,9 @@ def resolve_chat_command(
     ):
         path = _decode_conversation_path(request.command)
         if path.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if path.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4447,7 +4753,9 @@ def resolve_chat_command(
     ):
         lifecycle = _decode_conversation_lifecycle(request.command)
         if lifecycle.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if lifecycle.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4466,7 +4774,9 @@ def resolve_chat_command(
     if request.command_name == CREATE_CONVERSATION_COMMAND:
         create = _decode_create_conversation(request.command)
         if create.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if create.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4475,7 +4785,9 @@ def resolve_chat_command(
     if request.command_name == SUBMIT_MESSAGE_COMMAND:
         submit = _decode(request.command)
         if submit.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if submit.attachment_references and submit.actor_id != context.principal:
             # The staged rows an attachment resolves against are the authenticated
             # actor's own; naming another actor would read someone else's staging.
@@ -4494,7 +4806,9 @@ def resolve_chat_command(
     if request.command_name == ENQUEUE_MESSAGE_COMMAND:
         enqueue = _decode_enqueue(request.command)
         if enqueue.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if enqueue.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4509,46 +4823,65 @@ def resolve_chat_command(
     if request.command_name == UPDATE_QUEUED_SUBMISSION_COMMAND:
         update_queue = _decode_update_queue(request.command)
         if update_queue.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         return _update_queued_submission(update_queue)
     if request.command_name == REORDER_QUEUED_SUBMISSION_COMMAND:
         reorder = _decode_reorder(request.command)
         if reorder.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         return _reorder_queued_submission(reorder)
     if request.command_name == CANCEL_QUEUED_SUBMISSION_COMMAND:
         cancel_queue = _decode_cancel_queue(request.command)
         if cancel_queue.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         return _cancel_queued_submission(cancel_queue)
     if request.command_name == STOP_GENERATION_COMMAND:
         stop_generation = _decode_stop_generation(request.command)
         if stop_generation.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         return _stop_generation(stop_generation)
     if request.command_name == RETRY_GENERATION_COMMAND:
         retry_generation = _decode_retry_generation(request.command)
         if retry_generation.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         return _retry_generation(retry_generation)
     if request.command_name == SAVE_DRAFT_COMMAND:
         save = _decode_save_draft(request.command)
         if save.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if save.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
             )
-        if save.context_references or (save.attachment_references and blobs_root is None):
+        if save.context_references or (
+            save.attachment_references and blobs_root is None
+        ):
             # Context references have no authority in this build, and attachment
             # references cannot be proved without a blob root: a draft that states
             # either is a dependency_unavailable refusal, not a silent drop.
             return None
         return _save_draft(save, blobs_root)
-    if request.command_name in (STAGE_ATTACHMENT_COMMAND, REMOVE_STAGED_ATTACHMENT_COMMAND):
+    if request.command_name in (
+        STAGE_ATTACHMENT_COMMAND,
+        REMOVE_STAGED_ATTACHMENT_COMMAND,
+    ):
         attachment = _decode_attachment_command(request.command)
         if attachment.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if attachment.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4559,7 +4892,9 @@ def resolve_chat_command(
     if request.command_name == SUBMIT_STEERING_INPUT_COMMAND:
         steer = _decode_steering_input(request.command)
         if steer.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if steer.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"
@@ -4570,7 +4905,9 @@ def resolve_chat_command(
     if request.command_name == DISCARD_DRAFT_COMMAND:
         discard = _decode_discard_draft(request.command)
         if discard.workspace_id != context.workspace_id:
-            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+            raise _invalid(
+                "workspaceId", "is not the workspace this request was authorized for"
+            )
         if discard.actor_id != context.principal:
             raise _invalid(
                 "actorId", "is not the principal this request was authenticated as"

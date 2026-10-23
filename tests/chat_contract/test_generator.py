@@ -28,7 +28,9 @@ GENERATED = REPO_ROOT / "src" / "omnivia_core" / "chat_contract" / "v1" / "gener
 
 
 def _load_generator_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("generate_chat_contract_gen", SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "generate_chat_contract_gen", SCRIPT_PATH
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -70,7 +72,9 @@ def test_the_pinned_digest_matches_the_currently_computed_one() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_a_single_changed_byte_fails_the_digest_check(tmp_path: Path, monkeypatch) -> None:
+def test_a_single_changed_byte_fails_the_digest_check(
+    tmp_path: Path, monkeypatch
+) -> None:
     tampered = tmp_path / "chat" / "v1"
     shutil.copytree(REPO_ROOT / "contracts" / "chat" / "v1", tampered)
     target = tampered / "schemas" / "common.schema.json"
@@ -85,7 +89,9 @@ def test_a_single_changed_byte_fails_the_digest_check(tmp_path: Path, monkeypatc
     assert any("digest mismatch" in finding for finding in findings)
 
 
-def test_a_missing_schema_fails_the_count_and_digest_check(tmp_path: Path, monkeypatch) -> None:
+def test_a_missing_schema_fails_the_count_and_digest_check(
+    tmp_path: Path, monkeypatch
+) -> None:
     tampered = tmp_path / "chat" / "v1"
     shutil.copytree(REPO_ROOT / "contracts" / "chat" / "v1", tampered)
     (tampered / "schemas" / "common.schema.json").unlink()
@@ -98,10 +104,14 @@ def test_a_missing_schema_fails_the_count_and_digest_check(tmp_path: Path, monke
     assert any("schema count mismatch" in finding for finding in findings)
 
 
-def test_an_extra_fixture_fails_the_count_and_digest_check(tmp_path: Path, monkeypatch) -> None:
+def test_an_extra_fixture_fails_the_count_and_digest_check(
+    tmp_path: Path, monkeypatch
+) -> None:
     tampered = tmp_path / "chat" / "v1"
     shutil.copytree(REPO_ROOT / "contracts" / "chat" / "v1", tampered)
-    (tampered / "fixtures" / "valid" / "extra-not-approved.json").write_text("{}", encoding="utf-8")
+    (tampered / "fixtures" / "valid" / "extra-not-approved.json").write_text(
+        "{}", encoding="utf-8"
+    )
 
     monkeypatch.setattr(generator, "CANONICAL_ROOT", tampered)
     monkeypatch.setattr(generator, "SCHEMAS_ROOT", tampered / "schemas")
@@ -126,8 +136,9 @@ def test_schema_names_and_ids_are_exact() -> None:
 
 def test_extract_vocabularies_returns_the_governed_counts() -> None:
     vocab = generator.extract_vocabularies()
-    # 30 -> 32: C8's ReviewDecision and SubmitHumanInput.
-    assert len(vocab["CHAT_COMMAND_NAMES"]) == 32
+    # 30 -> 32: C8's ReviewDecision and SubmitHumanInput; 33 adds private
+    # actor-scoped message feedback.
+    assert len(vocab["CHAT_COMMAND_NAMES"]) == 33
     assert len(vocab["ERROR_CODES"]) == 24
     # 18 -> 19: C8's chat.tool_call.state_changed.
     assert len(vocab["CHAT_EVENT_TYPES"]) == 19
@@ -141,8 +152,19 @@ def test_extract_vocabularies_returns_the_governed_counts() -> None:
 # Schema-derived validation metadata
 # --------------------------------------------------------------------------
 
-_ASSERTION_HOLDERS = ("properties", "items", "not", "if", "then", "else", "propertyNames",
-                      "additionalProperties", "allOf", "anyOf", "oneOf")
+_ASSERTION_HOLDERS = (
+    "properties",
+    "items",
+    "not",
+    "if",
+    "then",
+    "else",
+    "propertyNames",
+    "additionalProperties",
+    "allOf",
+    "anyOf",
+    "oneOf",
+)
 
 
 def _walk(node: object) -> Iterator[dict[str, object]]:
@@ -154,15 +176,27 @@ def _walk(node: object) -> Iterator[dict[str, object]]:
         yield node
         for keyword, value in node.items():
             if keyword in _ASSERTION_HOLDERS:
-                yield from _walk(list(value.values()) if keyword == "properties" else value)
+                yield from _walk(
+                    list(value.values()) if keyword == "properties" else value
+                )
 
 
 def test_the_validation_metadata_covers_every_bounded_record() -> None:
     schemas = generator.extract_validation_schemas()
     assert set(generator.VALIDATION_ROOTS) == {
-        "BranchListQuery", "BranchListResult", "ChatEvent", "CommandError", "CommandResultEnvelope",
-        "ConversationListQuery", "ConversationListResult", "DescendantsQuery", "DescendantsResult",
-        "Direction", "ProviderInvocationRecord", "ProviderInvocationRequest", "ResnapshotResponse",
+        "BranchListQuery",
+        "BranchListResult",
+        "ChatEvent",
+        "CommandError",
+        "CommandResultEnvelope",
+        "ConversationListQuery",
+        "ConversationListResult",
+        "DescendantsQuery",
+        "DescendantsResult",
+        "Direction",
+        "ProviderInvocationRecord",
+        "ProviderInvocationRequest",
+        "ResnapshotResponse",
         "SubmitSteeringInputRequest",
     }
     for root in generator.VALIDATION_ROOTS.values():
@@ -180,22 +214,34 @@ def test_every_reference_in_the_validation_metadata_resolves() -> None:
                 assert reference in schemas, reference
 
 
-def test_the_validation_metadata_carries_only_keywords_the_validator_implements() -> None:
+def test_the_validation_metadata_carries_only_keywords_the_validator_implements() -> (
+    None
+):
     schemas = generator.extract_validation_schemas()
-    used = {keyword for entry in schemas.values() for sub in _walk(entry) for keyword in sub}
+    used = {
+        keyword for entry in schemas.values() for sub in _walk(entry) for keyword in sub
+    }
     assert used <= generator.SUPPORTED_VALIDATION_KEYWORDS
-    assert used.isdisjoint(generator.ANNOTATION_KEYWORDS), "annotations are not assertions"
-    assert generator.SUPPORTED_VALIDATION_KEYWORDS == set(_validation._IMPLEMENTED_KEYWORDS)
+    assert used.isdisjoint(generator.ANNOTATION_KEYWORDS), (
+        "annotations are not assertions"
+    )
+    assert generator.SUPPORTED_VALIDATION_KEYWORDS == set(
+        _validation._IMPLEMENTED_KEYWORDS
+    )
 
 
-def test_an_unimplemented_keyword_fails_generation_closed(tmp_path: Path, monkeypatch) -> None:
+def test_an_unimplemented_keyword_fails_generation_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
     """The gate that stops the codec from silently under-validating: a schema
     keyword the runtime validator cannot evaluate must not reach the metadata."""
     tampered = tmp_path / "chat" / "v1"
     shutil.copytree(REPO_ROOT / "contracts" / "chat" / "v1", tampered)
     target = tampered / "schemas" / "events.schema.json"
     document = json.loads(target.read_text(encoding="utf-8"))
-    document["$defs"]["ResnapshotResponse"]["dependentRequired"] = {"reason": ["graphRevision"]}
+    document["$defs"]["ResnapshotResponse"]["dependentRequired"] = {
+        "reason": ["graphRevision"]
+    }
     target.write_text(json.dumps(document), encoding="utf-8")
     monkeypatch.setattr(generator, "SCHEMAS_ROOT", tampered / "schemas")
 
@@ -214,23 +260,43 @@ def test_generation_is_deterministic() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_the_current_manifest_digest_is_computed_independently_of_the_approved_baseline() -> None:
+def test_the_current_manifest_digest_is_computed_independently_of_the_approved_baseline() -> (
+    None
+):
     import hashlib
 
     from omnivia_core.chat_contract.v1 import generated
 
-    manifest_path = REPO_ROOT / "contracts" / "chat" / "v1" / "fixtures" / "FIXTURE-MANIFEST.json"
+    manifest_path = (
+        REPO_ROOT / "contracts" / "chat" / "v1" / "fixtures" / "FIXTURE-MANIFEST.json"
+    )
     actual = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    assert generated.CURRENT_FIXTURE_MANIFEST_SHA256 == actual == generator.current_fixture_manifest_sha256()
+    assert (
+        generated.CURRENT_FIXTURE_MANIFEST_SHA256
+        == actual
+        == generator.current_fixture_manifest_sha256()
+    )
     assert "CURRENT_FIXTURE_MANIFEST_SHA256" in generated.__all__
     # The approved baseline digest is never repinned to make the candidate look approved.
-    assert generated.FIXTURE_MANIFEST_SHA256 == "7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54"
-    assert generated.FIXTURE_MANIFEST_SHA256 != generated.CURRENT_FIXTURE_MANIFEST_SHA256
+    assert (
+        generated.FIXTURE_MANIFEST_SHA256
+        == "7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54"
+    )
+    assert (
+        generated.FIXTURE_MANIFEST_SHA256 != generated.CURRENT_FIXTURE_MANIFEST_SHA256
+    )
 
 
 def test_the_candidate_is_labelled_a_review_candidate_not_approved() -> None:
     manifest = json.loads(
-        (REPO_ROOT / "contracts" / "chat" / "v1" / "fixtures" / "FIXTURE-MANIFEST.json").read_text(encoding="utf-8")
+        (
+            REPO_ROOT
+            / "contracts"
+            / "chat"
+            / "v1"
+            / "fixtures"
+            / "FIXTURE-MANIFEST.json"
+        ).read_text(encoding="utf-8")
     )
     assert manifest["status"] == "review-candidate"
     assert "not Approved, not Published, not Effective" in manifest["authority"]
