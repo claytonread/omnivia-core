@@ -182,6 +182,11 @@ EXPECTED_ALLOCATION = (
     (68, "0068_task_context_outcomes.sql", "Agent Runtime", "candidate"),
     (69, "0069_chat_generation_directions.sql", "Chat", "candidate"),
     (70, "0070_chat_staged_attachments.sql", "Chat", "candidate"),
+    (71, "0071_chat_tool_review_lifecycle.sql", "Chat", "candidate"),
+    (72, "0072_chat_tool_call_transport_events.sql", "Chat", "candidate"),
+    (73, "0073_chat_tool_human_input_waits.sql", "Chat", "candidate"),
+    (74, "0074_chat_provider_route.sql", "Chat", "candidate"),
+    (75, "0075_chat_reasoning_summaries.sql", "Chat", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -275,6 +280,15 @@ CANDIDATE_INTRODUCED_COMMITS = {
     # 0070 is the C7A Chat staged-attachment candidate, pinned to the commit that
     # introduced its SQL.
     70: "331a8661004638d3dc81a873d1696078b1c198a2",
+    # 0071-0073 are the Chat tool-review/tool-call/human-input candidates,
+    # pinned to the commits carrying their current SQL. 0074 is the per-job
+    # provider-route candidate and 0075 is the explicit provider
+    # reasoning-summary ledger candidate.
+    71: "d535b520495bcb640e5e87e85aaa35a7c882411e",
+    72: "b1f0297609ce4c36f82ea091cf9ccd96f26e0157",
+    73: "72b71dc19678f320c1db173da175546676219bf8",
+    74: "3f6d47ee5b83107a01c337cedd5911e1b7037631",
+    75: "d25c00013a87d47de4c2e37aed0b4cea2525fa74",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

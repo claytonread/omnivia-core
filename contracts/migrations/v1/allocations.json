@@ -590,6 +590,61 @@
       "sha256": "7f353acdfc631e176abcd8edc8722b3527cb86107208ca89e8180269496cfbb8",
       "introduced_commit": "331a8661004638d3dc81a873d1696078b1c198a2",
       "accepted_commit": null
+    },
+    {
+      "number": 71,
+      "filename": "0071_chat_tool_review_lifecycle.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 70,
+      "sha256": "868f0d2e77547dc9977c93df79153a6063ffd2c5b4c6678c392129c233926521",
+      "introduced_commit": "d535b520495bcb640e5e87e85aaa35a7c882411e",
+      "accepted_commit": null
+    },
+    {
+      "number": 72,
+      "filename": "0072_chat_tool_call_transport_events.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 71,
+      "sha256": "cec8c49d2b2a14bb2cf0f8c4410665a6bf457e3acd1dadb61048b7a0281b1206",
+      "introduced_commit": "b1f0297609ce4c36f82ea091cf9ccd96f26e0157",
+      "accepted_commit": null
+    },
+    {
+      "number": 73,
+      "filename": "0073_chat_tool_human_input_waits.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 72,
+      "sha256": "0c72e496b5d934cc1cbaaa1c6bae41b10e8df432c92af0e5aba93d3f59f5259a",
+      "introduced_commit": "72b71dc19678f320c1db173da175546676219bf8",
+      "accepted_commit": null
+    },
+    {
+      "number": 74,
+      "filename": "0074_chat_provider_route.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 73,
+      "sha256": "2fb9ce15827a9b4c47d1d3aff9dc71161f5bbc90564d7e3cbdd386290693367b",
+      "introduced_commit": "3f6d47ee5b83107a01c337cedd5911e1b7037631",
+      "accepted_commit": null
+    },
+    {
+      "number": 75,
+      "filename": "0075_chat_reasoning_summaries.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 74,
+      "sha256": "53465997e372cee8e1b49c0698ade61935e17ecc20a36ed7da78c3ec3f1aa048",
+      "introduced_commit": "d25c00013a87d47de4c2e37aed0b4cea2525fa74",
+      "accepted_commit": null
     }
   ]
 }
