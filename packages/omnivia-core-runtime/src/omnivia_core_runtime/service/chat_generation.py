@@ -80,6 +80,7 @@ from omnivia_core_runtime.storage import chat
 
 __all__ = [
     "MAX_GENERATION_ATTEMPTS",
+    "MAX_REASONING_SUMMARY_BYTES",
     "MAX_RESPONSE_TEXT_BYTES",
     "BoundaryUnavailable",
     "ClaimedGeneration",
@@ -98,6 +99,7 @@ __all__ = [
     "StaleGenerationVersion",
     "UnsupportedProviderEvent",
     "append_provider_generation_event",
+    "append_provider_reasoning_summary",
     "append_provider_text_delta",
     "apply_direction_continuation",
     "claim_fork_generation",
@@ -123,6 +125,11 @@ DEFAULT_LEASE_US: Final = 60_000_000
 #: assistant message past what a message part may carry is refused while it is still
 #: only a stream, rather than after the graph write fails.
 MAX_RESPONSE_TEXT_BYTES: Final = 262_144
+
+#: One Generation's complete collection of explicit display-safe reasoning
+#: summaries is bounded independently of answer text. At four bytes per Unicode
+#: code point this also admits the contract's 65536-character single-event bound.
+MAX_REASONING_SUMMARY_BYTES: Final = 262_144
 
 _QUEUED: Final = "chat.generation.queued"
 _STARTED: Final = "chat.generation.started"
@@ -180,6 +187,7 @@ _TERMINAL_JOB_STATE_OF: Final = {
 #: 0030 bounds one chunk's `chunk_ordinal` to 0..1000000. Held here so an ordinal
 #: outside it is a refusal naming the rule rather than a CHECK naming a column.
 _MAX_CHUNK_ORDINAL: Final = 1_000_000
+_MAX_REASONING_SUMMARY_CHARACTERS: Final = 65_536
 
 #: 0029 bounds `sanitized_error_detail` to 4096 bytes; the contract already bounds
 #: `safeMessage` to 2048 characters. Held to the smaller of the two here.
@@ -457,10 +465,9 @@ def _durable_event(wire: Mapping[str, Any]) -> tuple[str | None, dict[str, Any]]
 
     `None` for a provider event that carries no lifecycle transition -- every text,
     reasoning, tool and metadata event in the F2a vocabulary. Those are legal parts of
-    a trace and are not lifecycle transitions. A `text-delta` is the one of them that
-    is nonetheless durable, through :func:`append_provider_text_delta`, which writes
-    the `chat.generation.text_appended` event 0034 admits together with the chunk that
-    holds the text; the payload this function builds for it is that event's metadata.
+    a trace and are not lifecycle transitions. `text-delta` and the explicit,
+    display-safe `reasoning-summary` are nonetheless durable through their dedicated
+    append functions. Neither copies its content into a generation event payload.
 
     The returned payload is built field by field from the contract's own closed
     vocabularies and bounded sanitised strings. The input mapping is never copied.
@@ -1368,6 +1375,190 @@ def append_provider_text_delta(
         connection, workspace_id=workspace_id, generation_job_id=generation_job_id
     )
     return appended[sequence - 1]
+
+
+def append_provider_reasoning_summary(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    generation_attempt_id: str,
+    provider_event: Mapping[str, Any],
+    summary_ordinal: int,
+    now_us: int,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> chat.GenerationReasoningSummary:
+    """Persist one explicit provider display summary before the stream advances.
+
+    Only F2a's `reasoning-summary` event enters this path. Lifecycle reasoning
+    events remain content-free, and no fallback field is inspected, so raw
+    `reasoning_text` or chain-of-thought has no route into durable state.
+
+    The summary row, lease restatement and status-version advance commit together.
+    A provider event id makes exact redelivery idempotent; a conflicting reuse,
+    malformed summary, ordinal gap, terminal Attempt or aggregate bound overflow is
+    refused without a partial write.
+    """
+    _, payload = _durable_event(provider_event)
+    if payload["providerEventType"] != "reasoning-summary":
+        raise UnsupportedProviderEvent(
+            "provider event field 'eventType' is not 'reasoning-summary'"
+        )
+    summary = provider_event.get("summary")
+    if (
+        not isinstance(summary, str)
+        or not summary
+        or "\x00" in summary
+        or len(summary) > _MAX_REASONING_SUMMARY_CHARACTERS
+    ):
+        raise UnsupportedProviderEvent(
+            "provider event field 'summary' is not a non-empty bounded NUL-free string"
+        )
+    summary_bytes: bytes | None = None
+    try:
+        summary_bytes = summary.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    if summary_bytes is None or len(summary_bytes) > MAX_REASONING_SUMMARY_BYTES:
+        raise UnsupportedProviderEvent(
+            "provider event field 'summary' is outside the UTF-8 byte bound"
+        )
+    part_id = _wire_str(provider_event, "partId")
+    step_id = _wire_str(provider_event, "stepId")
+    if not _is_durable_identifier(part_id) or not _is_durable_identifier(step_id):
+        raise UnsupportedProviderEvent(
+            "provider reasoning summary identity is outside durable identifier bounds"
+        )
+    if (
+        isinstance(summary_ordinal, bool)
+        or not isinstance(summary_ordinal, int)
+        or not 0 <= summary_ordinal <= _MAX_CHUNK_ORDINAL
+    ):
+        raise GenerationSequenceGap(
+            "a reasoning summary ordinal is a zero-based integer within the durable bound"
+        )
+    content_hash = _text_chunk_hash(summary_bytes)
+
+    job = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if job is None:
+        raise GenerationNotFound(f"generation job {generation_job_id!r} is not in this workspace")
+    events = chat.read_generation_events(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    all_summaries = chat.read_generation_reasoning_summaries(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    attempt_summaries = tuple(
+        item for item in all_summaries if item.generation_attempt_id == generation_attempt_id
+    )
+    provider_event_id = payload.get("providerEventId")
+    existing_summary = None
+    if provider_event_id is not None:
+        existing_event = _existing_provider_event(
+            events,
+            generation_attempt_id=generation_attempt_id,
+            provider_event_id=str(provider_event_id),
+        )
+        existing_summary = next(
+            (
+                item
+                for item in all_summaries
+                if item.provider_event_id == str(provider_event_id)
+            ),
+            None,
+        )
+        if existing_event is not None or (
+            existing_summary is not None
+            and not (
+                existing_summary.generation_attempt_id == generation_attempt_id
+                and existing_summary.summary_ordinal == summary_ordinal
+                and existing_summary.provider_part_id == part_id
+                and existing_summary.provider_step_id == step_id
+                and existing_summary.summary_text == summary
+                and existing_summary.content_hash == content_hash
+            )
+        ):
+            raise DuplicateProviderEvent(
+                f"provider event {provider_event_id!r} is already durable carrying a different fact"
+            )
+
+    status = _require_status(connection, workspace_id=workspace_id, job=job)
+    if status.state in _TERMINAL_JOB_STATES:
+        raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
+    if status.state != "running" or status.current_attempt_id != generation_attempt_id:
+        raise GenerationConflict(f"generation job {generation_job_id!r} is not running this attempt")
+    if existing_summary is not None:
+        return existing_summary
+    if any(
+        event.generation_attempt_id == generation_attempt_id
+        and event.event_type in _TERMINAL_EVENT_TYPES
+        for event in events
+    ):
+        raise GenerationTerminal(f"generation attempt {generation_attempt_id!r} already ended")
+    if not any(
+        event.generation_attempt_id == generation_attempt_id and event.event_type == _STARTED
+        for event in events
+    ):
+        raise GenerationConflict(
+            f"generation attempt {generation_attempt_id!r} has no durable started event"
+        )
+    if summary_ordinal != len(attempt_summaries):
+        raise GenerationSequenceGap(
+            f"generation attempt {generation_attempt_id!r} expects its next reasoning summary "
+            f"at ordinal {len(attempt_summaries)}, not {summary_ordinal}"
+        )
+    combined_summary = "\n\n".join(
+        [*(item.summary_text for item in all_summaries), summary]
+    )
+    if len(combined_summary.encode("utf-8")) > MAX_REASONING_SUMMARY_BYTES:
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} would exceed the reasoning summary bound"
+        )
+
+    expires_at_us = now_us + lease_duration_us
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_reasoning_summary(
+            conversation_id=job.conversation_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=generation_attempt_id,
+            summary_ordinal=summary_ordinal,
+            provider_event_id=None if provider_event_id is None else str(provider_event_id),
+            provider_part_id=part_id,
+            provider_step_id=step_id,
+            summary_text=summary,
+            content_hash=content_hash,
+            occurred_at_us=now_us,
+            schema_version=1,
+        )
+        writer.update_generation_job(
+            generation_job_id=generation_job_id,
+            expected_state=job.state,
+            expected_lease_epoch=job.lease_epoch,
+            state=job.state,
+            lease_epoch=job.lease_epoch,
+            current_attempt_id=job.current_attempt_id,
+            lease_owner=job.lease_owner,
+            lease_expires_at_us=expires_at_us,
+            heartbeat_at_us=now_us,
+            last_event_sequence=job.last_event_sequence,
+            updated_at_us=now_us,
+            started_at_us=job.started_at_us,
+        )
+        _restate_status(writer, status, updated_at_us=now_us)
+
+    appended = chat.read_generation_reasoning_summaries(
+        connection,
+        workspace_id=workspace_id,
+        generation_job_id=generation_job_id,
+        generation_attempt_id=generation_attempt_id,
+    )
+    return appended[summary_ordinal]
 
 
 # --- C6: a Direction taken in at an iteration boundary -------------------------------

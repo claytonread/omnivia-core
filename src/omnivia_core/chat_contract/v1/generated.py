@@ -130,7 +130,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES: Final[int] = 16384
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = 'e0c373d232fba8b7b71371e6906ad570737d84bd2996ced7a66a67cc9f62a1bf'
+RESOURCE_INVENTORY_DIGEST: Final[str] = 'c7d23e840ade8f44125f95e0bedcc199174510e07d5e5a20483518dffb211573'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
@@ -324,7 +324,7 @@ F2A_PROVIDER_ERROR_CODES: Final[tuple[str, ...]] = (
     'unknown',
 )
 
-#: The closed v1 F2a provider event-discriminator vocabulary (provider.schema.json ProviderEventType). Additive-decode point, 20 members.
+#: The closed v1 F2a provider event-discriminator vocabulary (provider.schema.json ProviderEventType). Additive-decode point, 21 members.
 F2A_PROVIDER_EVENT_TYPES: Final[tuple[str, ...]] = (
     'stream-start',
     'text-start',
@@ -333,6 +333,7 @@ F2A_PROVIDER_EVENT_TYPES: Final[tuple[str, ...]] = (
     'reasoning-start',
     'reasoning-delta',
     'reasoning-end',
+    'reasoning-summary',
     'tool-input-start',
     'tool-input-delta',
     'tool-input-end',

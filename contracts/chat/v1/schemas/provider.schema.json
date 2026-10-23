@@ -37,7 +37,7 @@
       "description": "The closed v1 normalised provider event-discriminator vocabulary (technical delivery specification §12.7). Additive event types are a compatible minor extension; a strict decoder that receives an unrecognised type applies the additive-decode policy in CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §11 (safe diagnostic and resnapshot), never a guessed interpretation.",
       "enum": [
         "stream-start", "text-start", "text-delta", "text-end",
-        "reasoning-start", "reasoning-delta", "reasoning-end",
+        "reasoning-start", "reasoning-delta", "reasoning-end", "reasoning-summary",
         "tool-input-start", "tool-input-delta", "tool-input-end",
         "tool-call", "tool-result", "tool-approval-request",
         "structured-output", "file", "source", "warning",
@@ -461,6 +461,27 @@
         "providerRequestId": { "type": "string", "maxLength": 256 }
       }
     },
+    "ReasoningSummaryEvent": {
+      "title": "ReasoningSummaryEvent",
+      "description": "One provider-issued, display-safe reasoning summary. `summary` is an explicit provider summary intended for end-user display; it MUST NOT be populated from raw reasoning tokens, protected chain-of-thought, a `reasoning_text` item, or any other hidden reasoning content. The separate `ReasoningLifecycleEvent` remains content-free.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "occurredAt", "ordinal", "partId", "receivedAt", "schemaVersion", "stepId", "summary"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "reasoning-summary" },
+        "partId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderPartId" },
+        "stepId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderStepId" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 65536 },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
     "ToolInputLifecycleEvent": {
       "title": "ToolInputLifecycleEvent",
       "description": "Covers `tool-input-start`, `tool-input-delta` and `tool-input-end`. `toolName` is present only on `tool-input-start`; `inputDelta` only on `tool-input-delta`; `input` only on `tool-input-end`.",
@@ -850,6 +871,7 @@
         { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/StreamStartEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/TextLifecycleEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ReasoningLifecycleEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ReasoningSummaryEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolInputLifecycleEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolCallEvent" },
         { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolResultEvent" },

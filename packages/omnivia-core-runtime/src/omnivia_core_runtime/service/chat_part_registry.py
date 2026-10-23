@@ -15,12 +15,14 @@ stated, bounded shape for the families Core itself writes, so that a consumer
 has something to decode against and a producer has something to be held to.
 
 **Producer-first.** A family is registered here only when something actually
-produces it. Both families below are written by Core today:
+produces it. The families below are written by Core today:
 
 * `text` -- `service/chat_generation_executor.py` (assistant) and the user side
   via `editableParts`.
 * `attachment` -- `service/chat_submit.py`, through
   `service/chat_attachment_authority.attachment_part_payload`.
+* `reasoning.summary` -- `service/chat_generation_executor.py`, from only an
+  explicit provider `reasoning-summary` event; never from raw reasoning content.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -49,6 +51,7 @@ from omnivia_core_runtime.service.chat_attachment_authority import ATTACHMENT_PA
 
 __all__ = [
     "PART_REGISTRY_VERSION",
+    "REASONING_SUMMARY_PART_TYPE",
     "REGISTERED_PART_TYPES",
     "TEXT_PART_TYPE",
     "TOOL_CALL_PART_TYPE",
@@ -74,6 +77,10 @@ TEXT_PART_TYPE: Final = "text"
 #: The family is named for what it states -- a CALL that happened -- not for the
 #: card a consumer draws it as.
 TOOL_CALL_PART_TYPE: Final = "tool.call"
+
+#: One provider-issued display-safe reasoning summary. This is deliberately
+#: distinct from protected reasoning content, which never crosses F2a.
+REASONING_SUMMARY_PART_TYPE: Final = "reasoning.summary"
 
 class PartPayloadInvalid(Exception):
     """A payload that does not match the registered shape of its own family.
@@ -203,11 +210,27 @@ def _validate_tool_call(payload: Mapping[str, Any]) -> None:
                 raise PartPayloadInvalid(field, "must not be empty when present")
 
 
+def _validate_reasoning_summary(payload: Mapping[str, Any]) -> None:
+    """The exact display payload emitted for explicit provider summaries only."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "detail"}),
+        optional=frozenset(),
+    )
+    _require_text(payload, "title", maximum=64)
+    _require_text(payload, "detail", maximum=262_144)
+    if payload["title"] != "Reasoning summary":
+        raise PartPayloadInvalid("title", "must identify the reasoning summary")
+    if payload["detail"] == "" or "\x00" in payload["detail"]:
+        raise PartPayloadInvalid("detail", "must be non-empty and NUL-free")
+
+
 #: Every registered family, and the validator for its payload. Closed over the
 #: families Core produces -- see the module docstring on producer-first.
 _VALIDATORS: Final[Mapping[str, Any]] = {
     TEXT_PART_TYPE: _validate_text,
     ATTACHMENT_PART_TYPE: _validate_attachment,
+    REASONING_SUMMARY_PART_TYPE: _validate_reasoning_summary,
     TOOL_CALL_PART_TYPE: _validate_tool_call,
 }
 

@@ -24,6 +24,7 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
 )
 from omnivia_core_runtime.service.chat_part_registry import (
     PART_REGISTRY_VERSION,
+    REASONING_SUMMARY_PART_TYPE,
     REGISTERED_PART_TYPES,
     TEXT_PART_TYPE,
     TOOL_CALL_PART_TYPE,
@@ -42,20 +43,27 @@ def _reference(**overrides: Any) -> dict[str, Any]:
 def test_the_registry_states_only_the_families_core_produces() -> None:
     # Producer-first, and the whole point of the registry's restraint: Platform
     # decodes seventeen display-only part types that nothing produces, and the
-    # provider event layer declares twenty event types of which seven are ever
+    # provider event layer declares more event types than it emits today
     # emitted. Registering a shape for a family with no producer would be that
     # same defect a third time.
     #
     # Each family here has one, named so this list cannot grow quietly:
     #   attachment  `chat_submit`'s staged-attachment commit
     #   text        `chat_generation_executor._materialize_assistant` and `chat_submit`
+    #   reasoning.summary  explicit provider `reasoning-summary` events only
     #   tool.call   `chat_generation_executor._record_tool_proposal` (C9), which
     #               records a provider `tool-call` event into C8's ledger, and
     #               `_materialize_assistant`, which emits one part per row
-    assert REGISTERED_PART_TYPES == (ATTACHMENT_PART_TYPE, TEXT_PART_TYPE, TOOL_CALL_PART_TYPE)
+    assert REGISTERED_PART_TYPES == (
+        ATTACHMENT_PART_TYPE,
+        REASONING_SUMMARY_PART_TYPE,
+        TEXT_PART_TYPE,
+        TOOL_CALL_PART_TYPE,
+    )
     assert is_registered_part_type(TEXT_PART_TYPE)
     assert is_registered_part_type(ATTACHMENT_PART_TYPE)
     assert is_registered_part_type(TOOL_CALL_PART_TYPE)
+    assert is_registered_part_type(REASONING_SUMMARY_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -84,6 +92,22 @@ def test_text_carries_exactly_its_own_text() -> None:
     ):
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(TEXT_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_reasoning_summary_is_an_exact_display_safe_shape() -> None:
+    validate_registered_payload(
+        REASONING_SUMMARY_PART_TYPE,
+        {"title": "Reasoning summary", "detail": "Compared the two supported routes."},
+    )
+    for bad, field in (
+        ({"title": "Reasoning summary"}, "detail"),
+        ({"title": "Reasoning", "detail": "safe"}, "title"),
+        ({"title": "Reasoning summary", "detail": ""}, "detail"),
+        ({"title": "Reasoning summary", "detail": "safe", "content": "hidden"}, "content"),
+    ):
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(REASONING_SUMMARY_PART_TYPE, bad)
         assert refused.value.field == field
 
 

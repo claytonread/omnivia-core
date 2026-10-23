@@ -38,6 +38,7 @@ from omnivia_core_runtime.service.chat_compaction import derive_model_visible_co
 from omnivia_core_runtime.service.chat_generation import (
     DEFAULT_LEASE_US,
     MAX_GENERATION_ATTEMPTS,
+    MAX_REASONING_SUMMARY_BYTES,
     MAX_RESPONSE_TEXT_BYTES,
     BoundaryUnavailable,
     ContinuationIdentities,
@@ -49,6 +50,7 @@ from omnivia_core_runtime.service.chat_generation import (
     GenerationTerminal,
     StaleGenerationVersion,
     append_provider_generation_event,
+    append_provider_reasoning_summary,
     append_provider_text_delta,
     apply_direction_continuation,
     claim_fork_generation,
@@ -60,6 +62,7 @@ from omnivia_core_runtime.service.chat_generation import (
     stage_direction_continuation,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    REASONING_SUMMARY_PART_TYPE,
     TOOL_CALL_PART_TYPE,
     validate_registered_payload,
 )
@@ -607,16 +610,32 @@ def _part_document(part_type: str, payload: Mapping[str, Any]) -> dict[str, Any]
     return {"payload": dict(payload), "type": part_type, "visibility": "standard"}
 
 
+def reasoning_summary_part_payload(
+    summaries: tuple[chat.GenerationReasoningSummary, ...],
+) -> dict[str, Any]:
+    """Project explicit provider summaries without reading any reasoning content."""
+    return {
+        "title": "Reasoning summary",
+        "detail": "\n\n".join(item.summary_text for item in summaries),
+    }
+
+
 def _message_parts(
-    text: str, tool_calls: tuple[chat.ChatToolCall, ...] = ()
+    text: str,
+    tool_calls: tuple[chat.ChatToolCall, ...] = (),
+    reasoning_summaries: tuple[chat.GenerationReasoningSummary, ...] = (),
 ) -> tuple[tuple[str, dict[str, Any]], ...]:
-    """The Message's ordered `(part_type, payload)` list: text if any, then tool calls.
+    """Ordered parts: provider summary, answer text if any, then tool calls.
 
     No text WITH tool calls means no text part, never an empty one: a tool-call-only
     response commits only its typed parts rather than inventing empty prose. Hash, part
     index and the rows written all come from this one list.
     """
     parts: list[tuple[str, dict[str, Any]]] = []
+    if reasoning_summaries:
+        parts.append(
+            (REASONING_SUMMARY_PART_TYPE, reasoning_summary_part_payload(reasoning_summaries))
+        )
     if text or not tool_calls:
         # A text-only commit keeps its text part whatever it holds, so no
         # pre-C9 message changes meaning; only a tool-call response omits it.
@@ -626,7 +645,9 @@ def _message_parts(
 
 
 def _message_hash(
-    text: str, tool_calls: tuple[chat.ChatToolCall, ...] = ()
+    text: str,
+    tool_calls: tuple[chat.ChatToolCall, ...] = (),
+    reasoning_summaries: tuple[chat.GenerationReasoningSummary, ...] = (),
 ) -> tuple[str, tuple[str, ...]]:
     """The Message `content_hash` and one part hash per part, in part order.
 
@@ -642,7 +663,7 @@ def _message_hash(
     (attempt, step ordinal) for this reason, and the tool calls are durable
     before the commit, so a replay of the same generation hashes the same way.
     """
-    parts = _message_parts(text, tool_calls)
+    parts = _message_parts(text, tool_calls, reasoning_summaries)
     documents = [_part_document(part_type, payload) for part_type, payload in parts]
     part_hashes = tuple(
         "sha256:" + hashlib.sha256(to_canonical_json(payload).encode("utf-8")).hexdigest()
@@ -1028,6 +1049,7 @@ class ChatGenerationExecutor:
         prior_bytes = sum(len(hop.prior_text.encode("utf-8")) for hop in hops)
         continued_as: str | None = None
         text_chunks: list[str] = []
+        reasoning_summaries: list[str] = []
         # C9: the step ordinal of the next tool call in THIS attempt. Per
         # attempt, not per job: `open_chat_turn` opens one turn per attempt, and
         # a step ordinal is a position within its own turn.
@@ -1105,6 +1127,42 @@ class ChatGenerationExecutor:
                         prior_response_bytes=prior_bytes,
                     )
                     text_chunks.append(delta)
+                elif event_type == "reasoning-summary":
+                    summary = event.get("summary")
+                    part_id = event.get("partId")
+                    step_id = event.get("stepId")
+                    summary_bytes: bytes | None = None
+                    if isinstance(summary, str):
+                        try:
+                            summary_bytes = summary.encode("utf-8")
+                        except UnicodeEncodeError:
+                            pass
+                    if (
+                        not isinstance(summary, str)
+                        or not summary
+                        or "\x00" in summary
+                        or len(summary) > 65_536
+                        or summary_bytes is None
+                        or len(summary_bytes) > MAX_REASONING_SUMMARY_BYTES
+                        or not isinstance(part_id, str)
+                        or _PROVIDER_ID.fullmatch(part_id) is None
+                        or not isinstance(step_id, str)
+                        or _PROVIDER_ID.fullmatch(step_id) is None
+                    ):
+                        raise GenerationExecutorError("a provider reasoning summary is malformed")
+                    append_provider_reasoning_summary(
+                        self.connection,
+                        self.identity,
+                        workspace_id=self.workspace_id,
+                        fencing_generation=self.fencing_generation,
+                        generation_job_id=job.generation_job_id,
+                        generation_attempt_id=attempt_id,
+                        provider_event=event,
+                        summary_ordinal=len(reasoning_summaries),
+                        now_us=_now_us(self.clock),
+                        lease_duration_us=self._lease_duration_us(),
+                    )
+                    reasoning_summaries.append(summary)
                 elif event_type == "tool-call":
                     # C9: the one non-text family with a durable home and a
                     # built consumer. Recorded BEFORE the stream goes on, so a
@@ -1852,7 +1910,12 @@ class ChatGenerationExecutor:
             workspace_id=self.workspace_id,
             generation_job_id=job.generation_job_id,
         )
-        message_hash, part_hashes = _message_hash(text, tool_calls)
+        reasoning_summaries = chat.read_generation_reasoning_summaries(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_job_id=job.generation_job_id,
+        )
+        message_hash, part_hashes = _message_hash(text, tool_calls, reasoning_summaries)
         existing = self.connection.execute(
             "SELECT content_hash FROM omnivia_chat_messages "
             "WHERE workspace_id = ? AND message_id = ?",
@@ -1916,16 +1979,21 @@ class ChatGenerationExecutor:
                 committed_at_us=now_us,
             )
             # One loop over the ordered part list the hash was computed from.
-            # Text (if any) is index 0 and keeps its pre-C9 part id; each
-            # `tool.call` part follows in the ledger's order. Every payload is
+            # An explicit reasoning summary (if any) precedes answer text; each
+            # `tool.call` part follows in the ledger's order. Every typed payload is
             # validated against the registry before it is written, so a shape
             # a family does not state -- the tool's arguments above all --
             # cannot reach a committed Message even by mistake.
             tool_calls_by_index = iter(tool_calls)
-            for index, (part_type, payload) in enumerate(_message_parts(text, tool_calls)):
+            for index, (part_type, payload) in enumerate(
+                _message_parts(text, tool_calls, reasoning_summaries)
+            ):
                 if part_type == TOOL_CALL_PART_TYPE:
                     validate_registered_payload(part_type, payload)
                     part_id = _stable_id("assistant-tool-part", next(tool_calls_by_index).tool_call_id)
+                elif part_type == REASONING_SUMMARY_PART_TYPE:
+                    validate_registered_payload(part_type, payload)
+                    part_id = _stable_id("assistant-reasoning-part", job.generation_job_id)
                 else:
                     part_id = _stable_id("assistant-part", job.generation_job_id)
                 writer.append_message_part(

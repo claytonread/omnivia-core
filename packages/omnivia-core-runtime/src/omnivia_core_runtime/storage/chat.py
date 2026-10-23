@@ -95,6 +95,7 @@ __all__ = [
     "GenerationEvent",
     "GenerationJob",
     "GenerationJobStatusProjection",
+    "GenerationReasoningSummary",
     "GenerationTextChunk",
     "Message",
     "MessageDerivation",
@@ -121,6 +122,7 @@ __all__ = [
     "append_generation_continuation",
     "append_generation_event",
     "append_generation_job",
+    "append_generation_reasoning_summary",
     "append_generation_text_chunk",
     "append_message",
     "append_message_derivation",
@@ -161,6 +163,7 @@ __all__ = [
     "read_generation_events",
     "read_generation_job",
     "read_generation_job_status_projection",
+    "read_generation_reasoning_summaries",
     "read_generation_text_chunks",
     "read_message",
     "read_message_parts",
@@ -588,6 +591,22 @@ class GenerationTextChunk:
     chunk_ordinal: int
     provider_event_id: str | None
     text_content: str
+    content_hash: str
+    schema_version: int
+    occurred_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationReasoningSummary:
+    workspace_id: str
+    conversation_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    summary_ordinal: int
+    provider_event_id: str | None
+    provider_part_id: str
+    provider_step_id: str
+    summary_text: str
     content_hash: str
     schema_version: int
     occurred_at_us: int
@@ -1497,6 +1516,43 @@ class ChatWriter:
                 chunk_ordinal,
                 provider_event_id,
                 text_content,
+                content_hash,
+                schema_version,
+                occurred_at_us,
+            ),
+        )
+
+    def append_generation_reasoning_summary(
+        self,
+        *,
+        conversation_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        summary_ordinal: int,
+        provider_part_id: str,
+        provider_step_id: str,
+        summary_text: str,
+        content_hash: str,
+        occurred_at_us: int,
+        provider_event_id: str | None = None,
+        schema_version: int = 1,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_generation_reasoning_summaries "
+            "(workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+            "summary_ordinal, provider_event_id, provider_part_id, provider_step_id, "
+            "summary_text, content_hash, schema_version, occurred_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                generation_job_id,
+                generation_attempt_id,
+                summary_ordinal,
+                provider_event_id,
+                provider_part_id,
+                provider_step_id,
+                summary_text,
                 content_hash,
                 schema_version,
                 occurred_at_us,
@@ -2832,6 +2888,20 @@ def append_generation_text_chunk(
         writer.append_generation_text_chunk(**fields)
 
 
+def append_generation_reasoning_summary(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_reasoning_summary(**fields)
+
+
 def append_request_manifest_once(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -4132,6 +4202,58 @@ def read_generation_text_chunks(
     query += " ORDER BY generation_attempt_id, chunk_ordinal"
     rows = connection.execute(query, params).fetchall()
     return tuple(_generation_text_chunk_from_row(row) for row in rows)
+
+
+_GENERATION_REASONING_SUMMARY_COLUMNS = (
+    "s.workspace_id, s.conversation_id, s.generation_job_id, s.generation_attempt_id, "
+    "s.summary_ordinal, s.provider_event_id, s.provider_part_id, s.provider_step_id, "
+    "s.summary_text, s.content_hash, s.schema_version, s.occurred_at_us"
+)
+
+
+def _generation_reasoning_summary_from_row(
+    row: tuple[Any, ...],
+) -> GenerationReasoningSummary:
+    return GenerationReasoningSummary(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        summary_ordinal=row[4],
+        provider_event_id=row[5],
+        provider_part_id=row[6],
+        provider_step_id=row[7],
+        summary_text=row[8],
+        content_hash=row[9],
+        schema_version=row[10],
+        occurred_at_us=row[11],
+    )
+
+
+def read_generation_reasoning_summaries(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    generation_job_id: str,
+    generation_attempt_id: str | None = None,
+) -> tuple[GenerationReasoningSummary, ...]:
+    """Read summaries in provider order, and Attempts in Generation order."""
+    query = (
+        f"SELECT {_GENERATION_REASONING_SUMMARY_COLUMNS} "
+        "FROM omnivia_chat_generation_reasoning_summaries s "
+        "JOIN omnivia_chat_generation_attempts a "
+        "ON a.workspace_id = s.workspace_id "
+        "AND a.generation_job_id = s.generation_job_id "
+        "AND a.generation_attempt_id = s.generation_attempt_id "
+        "WHERE s.workspace_id = ? AND s.generation_job_id = ?"
+    )
+    params: list[Any] = [workspace_id, generation_job_id]
+    if generation_attempt_id is not None:
+        query += " AND s.generation_attempt_id = ?"
+        params.append(generation_attempt_id)
+    query += " ORDER BY a.attempt_number, s.summary_ordinal"
+    rows = connection.execute(query, params).fetchall()
+    return tuple(_generation_reasoning_summary_from_row(row) for row in rows)
 
 
 _DIRECTION_COLUMNS = (

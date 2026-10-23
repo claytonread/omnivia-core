@@ -437,6 +437,15 @@
 #     and never projected into a snapshot or query result. No version change:
 #     every document that validated before still validates and no required
 #     member moves.
+#   provider.schema.json -- one additive `reasoning-summary` F2a event (owner
+#     authorization, Clayton Read, 24 October 2026). It carries only an explicit
+#     provider-issued display summary and is structurally separate from the
+#     content-free reasoning lifecycle events. Raw reasoning tokens,
+#     `reasoning_text` and protected chain-of-thought remain forbidden. Core has
+#     a durable producer and the direct Platform renderer has the corresponding
+#     `reasoning.summary` consumer, so this is not a declaration without a path.
+#     `ProviderEventType` is an additive-decode point by the contract's own rule:
+#     an older strict reader resnapshots instead of guessing at the new event.
 # The first five are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
 # COMPATIBILITY-AND-MIGRATION.md §3, as is the sixth above; the F2b carrier
 # rename, the three bridge protocol changes and the two D07 protocol changes are
@@ -541,7 +550,7 @@ DIRECTION_CONTENT_MAX_UTF8_BYTES = 16384
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "e0c373d232fba8b7b71371e6906ad570737d84bd2996ced7a66a67cc9f62a1bf"
+    "c7d23e840ade8f44125f95e0bedcc199174510e07d5e5a20483518dffb211573"
 )
 
 
