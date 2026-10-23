@@ -645,6 +645,17 @@
       "sha256": "53465997e372cee8e1b49c0698ade61935e17ecc20a36ed7da78c3ec3f1aa048",
       "introduced_commit": "d25c00013a87d47de4c2e37aed0b4cea2525fa74",
       "accepted_commit": null
+    },
+    {
+      "number": 76,
+      "filename": "0076_chat_message_feedback.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 75,
+      "sha256": "d180766c20bfc8cfa3daa37f801bdcc851242b3d5a1ac7527879c4e60b08b637",
+      "introduced_commit": "992721540e95f08b20cdfa400b5999c8e3a7d2aa",
+      "accepted_commit": null
     }
   ]
 }

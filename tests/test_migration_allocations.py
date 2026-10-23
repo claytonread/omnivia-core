@@ -187,6 +187,7 @@ EXPECTED_ALLOCATION = (
     (73, "0073_chat_tool_human_input_waits.sql", "Chat", "candidate"),
     (74, "0074_chat_provider_route.sql", "Chat", "candidate"),
     (75, "0075_chat_reasoning_summaries.sql", "Chat", "candidate"),
+    (76, "0076_chat_message_feedback.sql", "Chat", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -289,6 +290,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     73: "72b71dc19678f320c1db173da175546676219bf8",
     74: "3f6d47ee5b83107a01c337cedd5911e1b7037631",
     75: "d25c00013a87d47de4c2e37aed0b4cea2525fa74",
+    76: "992721540e95f08b20cdfa400b5999c8e3a7d2aa",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
