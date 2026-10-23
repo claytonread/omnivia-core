@@ -131,7 +131,8 @@ def test_extract_vocabularies_returns_the_governed_counts() -> None:
     assert len(vocab["ERROR_CODES"]) == 24
     # 18 -> 19: C8's chat.tool_call.state_changed.
     assert len(vocab["CHAT_EVENT_TYPES"]) == 19
-    assert len(vocab["F2A_PROVIDER_EVENT_TYPES"]) == 20
+    # 20 -> 21: explicit display-safe provider reasoning summaries.
+    assert len(vocab["F2A_PROVIDER_EVENT_TYPES"]) == 21
     assert len(vocab["F2A_FINISH_REASONS"]) == 7
     assert len(vocab["F2A_PROVIDER_ERROR_CODES"]) == 16
 
