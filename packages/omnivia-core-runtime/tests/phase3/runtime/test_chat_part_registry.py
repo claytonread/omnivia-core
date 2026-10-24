@@ -33,6 +33,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    MATH_STEPS_PART_TYPE,
+    MATH_STEPS_RESPONSE_SCHEMA_REF,
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     PART_REGISTRY_VERSION,
@@ -79,12 +81,14 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   chart       validated structured chart output materialised by the executor
     #   diagram.flow validated structured directed graph materialised by the executor
     #   activity.series validated structured UTC calendar series materialised by the executor
+    #   math.steps  validated structured-math derivation materialised by the executor
     assert REGISTERED_PART_TYPES == (
         ACTIVITY_SERIES_PART_TYPE,
         ATTACHMENT_PART_TYPE,
         CHART_PART_TYPE,
         DIAGRAM_FLOW_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
+        MATH_STEPS_PART_TYPE,
         METRIC_NUMBER_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
         RESPONSE_FORMAT_PART_TYPE,
@@ -105,6 +109,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(CHART_PART_TYPE)
     assert is_registered_part_type(DIAGRAM_FLOW_PART_TYPE)
     assert is_registered_part_type(ACTIVITY_SERIES_PART_TYPE)
+    assert is_registered_part_type(MATH_STEPS_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -218,6 +223,10 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
     validate_registered_payload(
         RESPONSE_FORMAT_PART_TYPE,
         {"schemaRef": ACTIVITY_SERIES_RESPONSE_SCHEMA_REF},
+    )
+    validate_registered_payload(
+        RESPONSE_FORMAT_PART_TYPE,
+        {"schemaRef": MATH_STEPS_RESPONSE_SCHEMA_REF},
     )
     for bad, field in (
         ({}, "schemaRef"),
@@ -407,6 +416,57 @@ def test_activity_series_is_exact_bounded_and_internally_consistent() -> None:
     for bad, field in cases:
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(ACTIVITY_SERIES_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_math_steps_is_exact_bounded_and_recursively_closed() -> None:
+    valid = {
+        "label": "Quadratic derivation",
+        "steps": [
+            {
+                "tokens": [
+                    {"kind": "text", "text": "x"},
+                    {"kind": "sup", "tokens": [{"kind": "text", "text": "2"}]},
+                    {"kind": "text", "text": " = "},
+                    {
+                        "kind": "frac",
+                        "over": [{"kind": "text", "text": "-b ± √Δ"}],
+                        "under": [{"kind": "text", "text": "2a"}],
+                    },
+                ],
+                "note": "Apply the quadratic formula",
+            }
+        ],
+    }
+    validate_registered_payload(MATH_STEPS_PART_TYPE, valid)
+    validate_registered_payload(
+        MATH_STEPS_PART_TYPE,
+        {"steps": [{"tokens": [{"kind": "text", "text": "1 + 1 = 2"}]}]},
+    )
+
+    nested: dict[str, Any] = {"kind": "text", "text": "x"}
+    for _ in range(5):
+        nested = {"kind": "sup", "tokens": [nested]}
+    too_many_nodes = [
+        {"tokens": [{"kind": "text", "text": "x"} for _ in range(64)]}
+        for _ in range(5)
+    ]
+    cases = (
+        ({**valid, "label": " leading"}, "label"),
+        ({"steps": []}, "steps"),
+        ({"steps": [{"tokens": [], "note": "empty"}]}, "steps[0].tokens"),
+        ({"steps": [{"tokens": [{"kind": "text", "text": ""}]}]}, "steps[0].tokens[0].text"),
+        ({"steps": [{"tokens": [{"kind": "text", "text": "\u0000"}]}]}, "steps[0].tokens[0].text"),
+        ({"steps": [{"tokens": [{"kind": "sqrt", "tokens": []}]}]}, "steps[0].tokens[0].kind"),
+        ({"steps": [{"tokens": [{"kind": "frac", "over": [], "under": [{"kind": "text", "text": "1"}]}]}]}, "steps[0].tokens[0].over"),
+        ({"steps": [{"tokens": [nested]}]}, "steps[0].tokens[0].tokens[0].tokens[0].tokens[0].tokens[0].tokens"),
+        ({"steps": too_many_nodes}, "steps[4].tokens"),
+        ({"steps": [{"tokens": [{"kind": "text", "text": "x"}], "note": None}]}, "steps[0].note"),
+        ({"steps": [{"tokens": [{"kind": "text", "text": "x"}], "html": "<b>x</b>"}]}, "steps[0].html"),
+    )
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(MATH_STEPS_PART_TYPE, bad)
         assert refused.value.field == field
 
 

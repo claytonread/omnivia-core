@@ -74,6 +74,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    MATH_STEPS_PART_TYPE,
+    MATH_STEPS_RESPONSE_SCHEMA_REF,
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     PRESENTATION_ONLY_PART_TYPES,
@@ -291,6 +293,17 @@ def _activity_series_provider_text(payload: Mapping[str, Any]) -> str:
     return "Activity:\n" + to_canonical_json(dict(payload))
 
 
+def _math_steps_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed math derivation."""
+    try:
+        validate_registered_payload(MATH_STEPS_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains malformed structured math"
+        ) from error
+    return "Math:\n" + to_canonical_json(dict(payload))
+
+
 def _trigger_response_format(
     connection: sqlite3.Connection,
     *,
@@ -414,6 +427,10 @@ def _provider_context(
             elif part.part_type == ACTIVITY_SERIES_PART_TYPE:
                 provider_parts.append(
                     {"kind": "text", "text": _activity_series_provider_text(part.payload)}
+                )
+            elif part.part_type == MATH_STEPS_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _math_steps_provider_text(part.payload)}
                 )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None
@@ -806,6 +823,9 @@ def structured_output_message_part(
 ) -> tuple[str, dict[str, Any]]:
     if output.schema_ref == ACTIVITY_SERIES_RESPONSE_SCHEMA_REF:
         part_type = ACTIVITY_SERIES_PART_TYPE
+        payload = dict(output.output)
+    elif output.schema_ref == MATH_STEPS_RESPONSE_SCHEMA_REF:
+        part_type = MATH_STEPS_PART_TYPE
         payload = dict(output.output)
     elif output.schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
         part_type = RICH_PROSE_PART_TYPE

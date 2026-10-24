@@ -84,6 +84,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     DIAGRAM_FLOW_PART_TYPE,
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
+    MATH_STEPS_PART_TYPE,
+    MATH_STEPS_RESPONSE_SCHEMA_REF,
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     RICH_PROSE_PART_TYPE,
@@ -1616,6 +1618,7 @@ def append_provider_structured_output(
         CHART_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
         DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
+        MATH_STEPS_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     }:
         raise UnsupportedProviderEvent(
@@ -1646,6 +1649,21 @@ def append_provider_structured_output(
         and normalized_output["unit"] is None
     ):
         del normalized_output["unit"]
+    if schema_ref == MATH_STEPS_RESPONSE_SCHEMA_REF:
+        if normalized_output.get("label") is None:
+            normalized_output.pop("label", None)
+        steps = normalized_output.get("steps")
+        if isinstance(steps, list):
+            normalized_output["steps"] = [
+                {
+                    key: value
+                    for key, value in candidate.items()
+                    if key != "note" or value is not None
+                }
+                if isinstance(candidate, Mapping)
+                else candidate
+                for candidate in steps
+            ]
     try:
         output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
@@ -1673,10 +1691,14 @@ def append_provider_structured_output(
         part_type = CHART_PART_TYPE
         part_payload = normalized_output
         schema_label = "chart"
-    else:
+    elif schema_ref == DIAGRAM_FLOW_RESPONSE_SCHEMA_REF:
         part_type = DIAGRAM_FLOW_PART_TYPE
         part_payload = normalized_output
         schema_label = "diagram-flow"
+    else:
+        part_type = MATH_STEPS_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "math-steps"
     try:
         validate_registered_payload(part_type, part_payload)
     except PartPayloadInvalid:

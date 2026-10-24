@@ -41,6 +41,8 @@ produces it. The families below are written by Core today:
   validated structured diagram-flow response producer.
 * `activity.series` -- `service/chat_generation_executor.py`, from only the
   validated structured activity-series response producer.
+* `math.steps` -- `service/chat_generation_executor.py`, from only the
+  validated structured-math response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -81,6 +83,8 @@ __all__ = [
     "GUARDRAIL_NOTICE_PART_TYPE",
     "GUARDRAIL_NOTICE_REASON",
     "GUARDRAIL_NOTICE_SAFE_MESSAGE",
+    "MATH_STEPS_PART_TYPE",
+    "MATH_STEPS_RESPONSE_SCHEMA_REF",
     "METRIC_NUMBER_PART_TYPE",
     "NUMBER_TICKER_RESPONSE_SCHEMA_REF",
     "PART_REGISTRY_VERSION",
@@ -142,6 +146,7 @@ NUMBER_TICKER_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.number-ticker.v1"
 CHART_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.chart.v1"
 DIAGRAM_FLOW_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.diagram-flow.v1"
 ACTIVITY_SERIES_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.activity-series.v1"
+MATH_STEPS_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.math-steps.v1"
 
 #: The existing Platform typed-part family that owns the table block. Core emits
 #: only the one-block table subset below; registering the whole renderer vocabulary
@@ -159,6 +164,9 @@ DIAGRAM_FLOW_PART_TYPE: Final = "diagram.flow"
 
 #: One exact bounded UTC calendar series emitted by the activity producer.
 ACTIVITY_SERIES_PART_TYPE: Final = "activity.series"
+
+#: One exact bounded structured-math derivation emitted by the math producer.
+MATH_STEPS_PART_TYPE: Final = "math.steps"
 
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
@@ -184,6 +192,14 @@ ACTIVITY_SERIES_MAX_TITLE_UTF8_BYTES: Final = 256
 ACTIVITY_SERIES_MAX_UNIT_UTF8_BYTES: Final = 64
 ACTIVITY_SERIES_MAX_TOTAL: Final = 1_000_000_000_000
 ACTIVITY_SERIES_MAX_COUNT: Final = 1_000_000_000
+MATH_STEPS_MAX_STEPS: Final = 16
+MATH_STEPS_MAX_NODES: Final = 256
+MATH_STEPS_MAX_DEPTH: Final = 4
+MATH_STEPS_MAX_TOKENS_PER_SEQUENCE: Final = 64
+MATH_STEPS_MAX_LABEL_UTF8_BYTES: Final = 256
+MATH_STEPS_MAX_NOTE_UTF8_BYTES: Final = 1_024
+MATH_STEPS_MAX_TEXT_UTF8_BYTES: Final = 512
+MATH_STEPS_MAX_TOTAL_TEXT_UTF8_BYTES: Final = 8_192
 _WORKSPACE_SCOPED_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 #: Exact Core-authored families that are transcript presentation, not F2a
@@ -385,6 +401,7 @@ def _validate_response_format(payload: Mapping[str, Any]) -> None:
         ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
         DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
+        MATH_STEPS_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     }:
         raise PartPayloadInvalid("schemaRef", "is not a registered response schema")
@@ -697,6 +714,157 @@ def _validate_activity_series(payload: Mapping[str, Any]) -> None:
         raise PartPayloadInvalid("total", "must equal the sum of every sparse point")
 
 
+def _math_text(
+    value: Any,
+    *,
+    field: str,
+    maximum: int,
+    trimmed: bool,
+) -> int:
+    """Validate one renderer-visible math string and return its UTF-8 size."""
+    if not isinstance(value, str):
+        raise PartPayloadInvalid(field, "must be a string")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise PartPayloadInvalid(field, "must be valid UTF-8 text") from None
+    if size > maximum:
+        raise PartPayloadInvalid(field, f"must be at most {maximum} UTF-8 bytes")
+    if (
+        value == ""
+        or value.strip() == ""
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise PartPayloadInvalid(field, "must be non-empty and control-free")
+    if trimmed and value.strip() != value:
+        raise PartPayloadInvalid(field, "must be trimmed")
+    return size
+
+
+def _validate_math_tokens(
+    value: Any,
+    *,
+    field: str,
+    depth: int,
+    budget: list[int],
+) -> None:
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= MATH_STEPS_MAX_TOKENS_PER_SEQUENCE
+        or depth > MATH_STEPS_MAX_DEPTH
+    ):
+        raise PartPayloadInvalid(
+            field, "must contain between 1 and 64 tokens at depth no greater than 4"
+        )
+    for index, candidate in enumerate(value):
+        prefix = f"{field}[{index}]."
+        budget[0] += 1
+        if budget[0] > MATH_STEPS_MAX_NODES:
+            raise PartPayloadInvalid(field, "must contain at most 256 token nodes")
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(prefix[:-1], "must be an object")
+        kind = candidate.get("kind")
+        if kind == "text":
+            _require_exact_keys(
+                candidate,
+                required=frozenset({"kind", "text"}),
+                optional=frozenset(),
+                prefix=prefix,
+            )
+            budget[1] += _math_text(
+                candidate["text"],
+                field=f"{prefix}text",
+                maximum=MATH_STEPS_MAX_TEXT_UTF8_BYTES,
+                trimmed=False,
+            )
+        elif kind == "frac":
+            _require_exact_keys(
+                candidate,
+                required=frozenset({"kind", "over", "under"}),
+                optional=frozenset(),
+                prefix=prefix,
+            )
+            _validate_math_tokens(
+                candidate["over"],
+                field=f"{prefix}over",
+                depth=depth + 1,
+                budget=budget,
+            )
+            _validate_math_tokens(
+                candidate["under"],
+                field=f"{prefix}under",
+                depth=depth + 1,
+                budget=budget,
+            )
+        elif kind in ("sup", "sub"):
+            _require_exact_keys(
+                candidate,
+                required=frozenset({"kind", "tokens"}),
+                optional=frozenset(),
+                prefix=prefix,
+            )
+            _validate_math_tokens(
+                candidate["tokens"],
+                field=f"{prefix}tokens",
+                depth=depth + 1,
+                budget=budget,
+            )
+        else:
+            raise PartPayloadInvalid(f"{prefix}kind", "must be text, frac, sup or sub")
+        if budget[1] > MATH_STEPS_MAX_TOTAL_TEXT_UTF8_BYTES:
+            raise PartPayloadInvalid(
+                field, "label, notes and expressions must total at most 8192 UTF-8 bytes"
+            )
+
+
+def _validate_math_steps(payload: Mapping[str, Any]) -> None:
+    """The exact closed structured-math AST accepted by Platform's Math Block."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"steps"}),
+        optional=frozenset({"label"}),
+    )
+    budget = [0, 0]
+    if "label" in payload:
+        budget[1] += _math_text(
+            payload["label"],
+            field="label",
+            maximum=MATH_STEPS_MAX_LABEL_UTF8_BYTES,
+            trimmed=True,
+        )
+    steps = payload["steps"]
+    if not isinstance(steps, list) or not 1 <= len(steps) <= MATH_STEPS_MAX_STEPS:
+        raise PartPayloadInvalid("steps", "must contain between 1 and 16 steps")
+    for index, candidate in enumerate(steps):
+        prefix = f"steps[{index}]."
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(prefix[:-1], "must be an object")
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"tokens"}),
+            optional=frozenset({"note"}),
+            prefix=prefix,
+        )
+        if "note" in candidate:
+            budget[1] += _math_text(
+                candidate["note"],
+                field=f"{prefix}note",
+                maximum=MATH_STEPS_MAX_NOTE_UTF8_BYTES,
+                trimmed=True,
+            )
+        if budget[1] > MATH_STEPS_MAX_TOTAL_TEXT_UTF8_BYTES:
+            raise PartPayloadInvalid(
+                prefix[:-1],
+                "label, notes and expressions must total at most 8192 UTF-8 bytes",
+            )
+        _validate_math_tokens(
+            candidate["tokens"],
+            field=f"{prefix}tokens",
+            depth=0,
+            budget=budget,
+        )
+
+
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
     """The exact one-table rich-prose subset emitted by the structured producer."""
     _require_exact_keys(payload, required=frozenset({"blocks"}), optional=frozenset())
@@ -762,6 +930,7 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     RESPONSE_FORMAT_PART_TYPE: _validate_response_format,
     RICH_PROSE_PART_TYPE: _validate_rich_prose_table,
     METRIC_NUMBER_PART_TYPE: _validate_metric_number,
+    MATH_STEPS_PART_TYPE: _validate_math_steps,
 }
 
 #: The registered family names, for a caller that wants to report the registry

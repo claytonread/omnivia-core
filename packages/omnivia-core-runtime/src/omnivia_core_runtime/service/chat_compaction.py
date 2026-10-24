@@ -22,6 +22,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_PART_TYPE,
     CHART_PART_TYPE,
     DIAGRAM_FLOW_PART_TYPE,
+    MATH_STEPS_PART_TYPE,
     METRIC_NUMBER_PART_TYPE,
     PRESENTATION_ONLY_PART_TYPES,
     RICH_PROSE_PART_TYPE,
@@ -183,6 +184,20 @@ def _message_text_parts(
                 {
                     "kind": "text",
                     "text": "Activity:\n" + to_canonical_json(dict(part.payload)),
+                }
+            )
+            continue
+        if part.part_type == MATH_STEPS_PART_TYPE:
+            try:
+                validate_registered_payload(MATH_STEPS_PART_TYPE, part.payload)
+            except PartPayloadInvalid as error:
+                raise ChatCompactionConflict(
+                    "the selected chat lineage contains malformed structured math"
+                ) from error
+            parts.append(
+                {
+                    "kind": "text",
+                    "text": "Math:\n" + to_canonical_json(dict(part.payload)),
                 }
             )
             continue
