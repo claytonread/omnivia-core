@@ -55,6 +55,7 @@ from omnivia_core_runtime.service.chat_attachment_authority import ATTACHMENT_PA
 
 __all__ = [
     "PART_REGISTRY_VERSION",
+    "PRESENTATION_ONLY_PART_TYPES",
     "REASONING_SUMMARY_PART_TYPE",
     "REGISTERED_PART_TYPES",
     "TEXT_PART_TYPE",
@@ -91,6 +92,18 @@ REASONING_SUMMARY_PART_TYPE: Final = "reasoning.summary"
 #: public Codex protocol currently exposes the query but no trustworthy result
 #: URLs or snippets, so this family deliberately carries neither.
 WEB_SEARCH_PART_TYPE: Final = "web.search"
+
+#: Exact Core-authored families that are transcript presentation, not F2a
+#: provider prompt content. Keeping this taxonomy beside the part registry gives
+#: both the ordinary and compacted context builders the same closed decision.
+#: Unknown open-code parts are deliberately absent and therefore still refused.
+PRESENTATION_ONLY_PART_TYPES: Final = frozenset(
+    {
+        REASONING_SUMMARY_PART_TYPE,
+        TOOL_CALL_PART_TYPE,
+        WEB_SEARCH_PART_TYPE,
+    }
+)
 
 class PartPayloadInvalid(Exception):
     """A payload that does not match the registered shape of its own family.

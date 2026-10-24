@@ -62,6 +62,7 @@ from omnivia_core_runtime.service.chat_generation import (
     stage_direction_continuation,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    PRESENTATION_ONLY_PART_TYPES,
     REASONING_SUMMARY_PART_TYPE,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
@@ -279,6 +280,11 @@ def _provider_context(
                 )
                 attachments.append(provider_part["attachmentReference"])
                 provider_parts.append(provider_part)
+            elif part.part_type in PRESENTATION_ONLY_PART_TYPES:
+                # These exact Core-authored families belong to the transcript UI.
+                # They are not provider prompt content and therefore have no entry
+                # in either the F2a message or its model-visible part references.
+                continue
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None
                 if not isinstance(text, str):

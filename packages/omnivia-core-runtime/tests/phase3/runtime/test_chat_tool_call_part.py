@@ -160,6 +160,19 @@ def parts(holder: m1.Owned) -> tuple[Any, ...]:
     )
 
 
+def provider_context_through_assistant(holder: m1.Owned) -> Any:
+    """Rebuild the next turn's context through the committed assistant message."""
+    message = assistant_messages(holder)[0]
+    return executor_module._provider_context(
+        holder.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=base.CONVERSATION_ID,
+        branch_id=base.BRANCH_ID,
+        trigger_message_id=message.message_id,
+        blobs_root=None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # The producer
 # ---------------------------------------------------------------------------
@@ -288,6 +301,18 @@ def test_the_committed_message_carries_one_tool_call_part_after_its_text(
     assert "Not run" in payload["detail"]
 
 
+def test_tool_call_parts_do_not_break_the_next_provider_context(seeded: m1.Owned) -> None:
+    run(seeded, Scripted(tool_stream(("provider-call-1", "read_file", ARGUMENTS))))
+
+    context = provider_context_through_assistant(seeded)
+    assert context.messages[-1] == {
+        "role": "assistant",
+        "parts": [{"kind": "text", "text": "looking that up"}],
+    }
+    assistant_ref = context.manifest_message_refs[-1]
+    assert [part["partType"] for part in assistant_ref["parts"]] == ["text"]
+
+
 def test_completed_provider_web_search_commits_one_dedicated_part_without_invented_results(
     seeded: m1.Owned,
 ) -> None:
@@ -328,6 +353,14 @@ def test_completed_provider_web_search_commits_one_dedicated_part_without_invent
     assert "results" not in serialized
     assert "http" not in serialized
     assert TOOL_CALL_PART_TYPE not in [part.part_type for part in committed]
+
+    context = provider_context_through_assistant(seeded)
+    assert context.messages[-1] == {
+        "role": "assistant",
+        "parts": [{"kind": "text", "text": "Found it."}],
+    }
+    assistant_ref = context.manifest_message_refs[-1]
+    assert [part["partType"] for part in assistant_ref["parts"]] == ["text"]
 
 
 def test_provider_web_search_payload_refuses_unbounded_or_extended_arguments(

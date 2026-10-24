@@ -16,6 +16,10 @@ from omnivia_core_runtime.service.chat_compaction import (
     derive_model_visible_context,
     record_completed_compaction,
 )
+from omnivia_core_runtime.service.chat_part_registry import (
+    TOOL_CALL_PART_TYPE,
+    WEB_SEARCH_PART_TYPE,
+)
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.migrations import (
     load_migrations,
@@ -257,6 +261,55 @@ def test_completed_compaction_records_brackets_and_preserves_raw_history(
     assert derived.manifest_message_refs[1]["messageId"] == manifest.TRIGGER_MESSAGE_ID
     serialized_refs = json.dumps(derived.manifest_message_refs, sort_keys=True)
     assert "root text must not be copied" not in serialized_refs
+
+
+def test_compacted_tail_excludes_presentation_parts_from_provider_context(
+    owned: manifest.m1.Owned,
+) -> None:
+    manifest.seed_conversation_and_queue(owned)
+    with manifest.writer(owned) as writer:
+        writer.append_message_part(
+            part_id="part-t0663-tool-display",
+            message_id=manifest.TRIGGER_MESSAGE_ID,
+            conversation_id=manifest.CONVERSATION_ID,
+            part_index=1,
+            part_type=TOOL_CALL_PART_TYPE,
+            schema_version=1,
+            visibility="standard",
+            payload={"id": "toolcall-t0663-display", "name": "read_file", "state": "succeeded"},
+            provenance="ai",
+            content_hash=manifest.digest("e"),
+            created_at_us=manifest.BASE_US + 30,
+        )
+        writer.append_message_part(
+            part_id="part-t0663-search-display",
+            message_id=manifest.TRIGGER_MESSAGE_ID,
+            conversation_id=manifest.CONVERSATION_ID,
+            part_index=2,
+            part_type=WEB_SEARCH_PART_TYPE,
+            schema_version=1,
+            visibility="standard",
+            payload={"query": "OpenAI official homepage", "state": "complete"},
+            provenance="ai",
+            content_hash=manifest.digest("f"),
+            created_at_us=manifest.BASE_US + 31,
+        )
+    _record_prefix_compaction(owned)
+
+    derived = derive_model_visible_context(
+        owned.connection,
+        workspace_id=manifest.WORKSPACE_ID,
+        conversation_id=manifest.CONVERSATION_ID,
+        branch_id=manifest.BRANCH_ID,
+        trigger_message_id=manifest.TRIGGER_MESSAGE_ID,
+    )
+
+    assert derived is not None
+    assert derived.messages[-1]["parts"] == (
+        {"kind": "text", "text": "trigger text must not be copied"},
+    )
+    tail_ref = derived.manifest_message_refs[-1]
+    assert [part["partType"] for part in tail_ref["parts"]] == ["text"]
 
 
 def test_compaction_replay_is_idempotent_but_conflict_fails_closed(

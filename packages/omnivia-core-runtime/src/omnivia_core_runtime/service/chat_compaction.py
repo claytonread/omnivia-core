@@ -18,6 +18,7 @@ from typing import Any
 
 from omnivia_core.chat_contract.v1 import ChatContractDecodeError, to_canonical_json
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
+from omnivia_core_runtime.service.chat_part_registry import PRESENTATION_ONLY_PART_TYPES
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.connection import StorageError
 
@@ -99,6 +100,8 @@ def _message_text_parts(
         connection, workspace_id=workspace_id, message_id=message_id
     ):
         if part.visibility != "standard":
+            continue
+        if part.part_type in PRESENTATION_ONLY_PART_TYPES:
             continue
         text = part.payload.get("text") if part.part_type == "text" else None
         if not isinstance(text, str):
@@ -489,6 +492,7 @@ def derive_model_visible_context(
                         connection, workspace_id=workspace_id, message_id=message.message_id
                     )
                     if part.visibility == "standard"
+                    and part.part_type not in PRESENTATION_ONLY_PART_TYPES
                 ),
             }
         )
