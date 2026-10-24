@@ -23,6 +23,8 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
     attachment_part_payload,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    CHART_PART_TYPE,
+    CHART_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
@@ -70,8 +72,10 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   response.format  explicit internal submit directive for one allow-listed schema
     #   rich.prose  validated structured data-table output materialised by the executor
     #   metric.number  validated number-ticker output materialised by the executor
+    #   chart       validated structured chart output materialised by the executor
     assert REGISTERED_PART_TYPES == (
         ATTACHMENT_PART_TYPE,
+        CHART_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
         METRIC_NUMBER_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
@@ -90,6 +94,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(RESPONSE_FORMAT_PART_TYPE)
     assert is_registered_part_type(RICH_PROSE_PART_TYPE)
     assert is_registered_part_type(METRIC_NUMBER_PART_TYPE)
+    assert is_registered_part_type(CHART_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -192,6 +197,10 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
         RESPONSE_FORMAT_PART_TYPE,
         {"schemaRef": NUMBER_TICKER_RESPONSE_SCHEMA_REF},
     )
+    validate_registered_payload(
+        RESPONSE_FORMAT_PART_TYPE,
+        {"schemaRef": CHART_RESPONSE_SCHEMA_REF},
+    )
     for bad, field in (
         ({}, "schemaRef"),
         ({"schemaRef": "arbitrary.schema"}, "schemaRef"),
@@ -230,6 +239,79 @@ def test_metric_number_is_exact_bounded_finite_and_control_free() -> None:
     for bad, field in cases:
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(METRIC_NUMBER_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_chart_is_exact_bounded_and_finite() -> None:
+    valid = {
+        "title": "Latency",
+        "chart": "line",
+        "detail": "Provider-reported latency",
+        "unit": "ms",
+        "series": [
+            {
+                "name": "Core",
+                "points": [
+                    {"label": "p50", "value": 8},
+                    {"label": "p95", "value": 12.5},
+                ],
+            }
+        ],
+    }
+    validate_registered_payload(CHART_PART_TYPE, valid)
+    cases = (
+        ({**valid, "title": ""}, "title"),
+        ({**valid, "chart": "scatter"}, "chart"),
+        ({**valid, "chart": []}, "chart"),
+        ({**valid, "detail": "x" * 4_097}, "detail"),
+        ({**valid, "unit": "x" * 65}, "unit"),
+        ({**valid, "series": []}, "series"),
+        (
+            {
+                **valid,
+                "series": [{"name": "", "points": [{"label": "p50", "value": 8}]}],
+            },
+            "series[0].name",
+        ),
+        (
+            {**valid, "series": [{"name": "Core", "points": []}]},
+            "series[0].points",
+        ),
+        (
+            {
+                **valid,
+                "series": [
+                    {"name": "Core", "points": [{"label": "", "value": 8}]}
+                ],
+            },
+            "series[0].points[0].label",
+        ),
+        (
+            {
+                **valid,
+                "series": [
+                    {"name": "Core", "points": [{"label": "p50", "value": True}]}
+                ],
+            },
+            "series[0].points[0].value",
+        ),
+        (
+            {
+                **valid,
+                "series": [
+                    {
+                        "name": "Core",
+                        "points": [{"label": "p50", "value": float("inf")}],
+                    }
+                ],
+            },
+            "series[0].points[0].value",
+        ),
+        ({**valid, "html": "<script>x</script>"}, "html"),
+    )
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(CHART_PART_TYPE, bad)
         assert refused.value.field == field
 
 

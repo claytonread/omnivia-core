@@ -35,6 +35,8 @@ produces it. The families below are written by Core today:
   the validated structured data-table response producer.
 * `metric.number` -- `service/chat_generation_executor.py`, from only the
   validated structured number-ticker response producer.
+* `chart` -- `service/chat_generation_executor.py`, from only the validated
+  structured chart response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -63,6 +65,8 @@ from typing import Any, Final
 from omnivia_core_runtime.service.chat_attachment_authority import ATTACHMENT_PART_TYPE
 
 __all__ = [
+    "CHART_PART_TYPE",
+    "CHART_RESPONSE_SCHEMA_REF",
     "DATA_TABLE_RESPONSE_SCHEMA_REF",
     "GUARDRAIL_NOTICE_PART_TYPE",
     "GUARDRAIL_NOTICE_REASON",
@@ -125,6 +129,7 @@ GUARDRAIL_NOTICE_SAFE_MESSAGE: Final = "The provider filtered some or all of thi
 RESPONSE_FORMAT_PART_TYPE: Final = "response.format"
 DATA_TABLE_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.data-table.v1"
 NUMBER_TICKER_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.number-ticker.v1"
+CHART_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.chart.v1"
 
 #: The existing Platform typed-part family that owns the table block. Core emits
 #: only the one-block table subset below; registering the whole renderer vocabulary
@@ -134,6 +139,9 @@ RICH_PROSE_PART_TYPE: Final = "rich.prose"
 #: One exact numeric answer emitted by the number-ticker structured producer.
 METRIC_NUMBER_PART_TYPE: Final = "metric.number"
 
+#: One exact bounded data-series answer emitted by the chart structured producer.
+CHART_PART_TYPE: Final = "chart"
+
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
 DATA_TABLE_MAX_COLUMN_UTF8_BYTES: Final = 256
@@ -141,6 +149,12 @@ DATA_TABLE_MAX_CELL_UTF8_BYTES: Final = 4_096
 NUMBER_TICKER_MAX_LABEL_UTF8_BYTES: Final = 256
 NUMBER_TICKER_MAX_UNIT_UTF8_BYTES: Final = 64
 NUMBER_TICKER_MAX_ABS_VALUE: Final = 1_000_000_000_000_000
+CHART_KINDS: Final = frozenset({"area", "bar", "donut", "line", "pie"})
+CHART_MAX_SERIES: Final = 8
+CHART_MAX_POINTS_PER_SERIES: Final = 64
+CHART_MAX_LABEL_UTF8_BYTES: Final = 256
+CHART_MAX_DETAIL_UTF8_BYTES: Final = 4_096
+CHART_MAX_UNIT_UTF8_BYTES: Final = 64
 
 #: Exact Core-authored families that are transcript presentation, not F2a
 #: provider prompt content. Keeping this taxonomy beside the part registry gives
@@ -337,6 +351,7 @@ def _validate_response_format(payload: Mapping[str, Any]) -> None:
     )
     _require_text(payload, "schemaRef", maximum=512)
     if payload["schemaRef"] not in {
+        CHART_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     }:
@@ -375,6 +390,87 @@ def _validate_metric_number(payload: Mapping[str, Any]) -> None:
         raise PartPayloadInvalid(
             "value", "must have absolute value at most 1000000000000000"
         )
+
+
+def _require_nonempty_text(
+    payload: Mapping[str, Any],
+    field: str,
+    *,
+    maximum: int,
+    prefix: str = "",
+) -> None:
+    try:
+        _require_text(payload, field, maximum=maximum)
+    except PartPayloadInvalid as error:
+        raise PartPayloadInvalid(f"{prefix}{error.field}", error.rule) from None
+    if payload[field] == "":
+        raise PartPayloadInvalid(f"{prefix}{field}", "must be non-empty")
+
+
+def _validate_chart(payload: Mapping[str, Any]) -> None:
+    """The exact bounded finite data-series answer emitted by the chart producer."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "chart", "series"}),
+        optional=frozenset({"detail", "unit"}),
+    )
+    _require_nonempty_text(payload, "title", maximum=CHART_MAX_LABEL_UTF8_BYTES)
+    chart = payload["chart"]
+    if not isinstance(chart, str) or chart not in CHART_KINDS:
+        raise PartPayloadInvalid("chart", "is not an admitted chart kind")
+    if "detail" in payload:
+        _require_text(payload, "detail", maximum=CHART_MAX_DETAIL_UTF8_BYTES)
+    if "unit" in payload:
+        _require_text(payload, "unit", maximum=CHART_MAX_UNIT_UTF8_BYTES)
+    series = payload["series"]
+    if not isinstance(series, list) or not 1 <= len(series) <= CHART_MAX_SERIES:
+        raise PartPayloadInvalid("series", "must contain between 1 and 8 series")
+    for series_index, candidate in enumerate(series):
+        prefix = f"series[{series_index}]."
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(prefix[:-1], "must be an object")
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"name", "points"}),
+            optional=frozenset(),
+            prefix=prefix,
+        )
+        _require_nonempty_text(
+            candidate,
+            "name",
+            maximum=CHART_MAX_LABEL_UTF8_BYTES,
+            prefix=prefix,
+        )
+        points = candidate["points"]
+        if not isinstance(points, list) or not 1 <= len(points) <= CHART_MAX_POINTS_PER_SERIES:
+            raise PartPayloadInvalid(
+                f"{prefix}points", "must contain between 1 and 64 points"
+            )
+        for point_index, point in enumerate(points):
+            point_prefix = f"{prefix}points[{point_index}]."
+            if not isinstance(point, Mapping):
+                raise PartPayloadInvalid(point_prefix[:-1], "must be an object")
+            _require_exact_keys(
+                point,
+                required=frozenset({"label", "value"}),
+                optional=frozenset(),
+                prefix=point_prefix,
+            )
+            _require_nonempty_text(
+                point,
+                "label",
+                maximum=CHART_MAX_LABEL_UTF8_BYTES,
+                prefix=point_prefix,
+            )
+            value = point["value"]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise PartPayloadInvalid(f"{point_prefix}value", "must be a number")
+            try:
+                finite = math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise PartPayloadInvalid(f"{point_prefix}value", "must be finite")
 
 
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
@@ -432,6 +528,7 @@ def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
 _VALIDATORS: Final[Mapping[str, Any]] = {
     TEXT_PART_TYPE: _validate_text,
     ATTACHMENT_PART_TYPE: _validate_attachment,
+    CHART_PART_TYPE: _validate_chart,
     REASONING_SUMMARY_PART_TYPE: _validate_reasoning_summary,
     TOOL_CALL_PART_TYPE: _validate_tool_call,
     WEB_SEARCH_PART_TYPE: _validate_web_search,

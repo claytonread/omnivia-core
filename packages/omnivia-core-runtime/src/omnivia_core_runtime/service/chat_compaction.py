@@ -19,6 +19,7 @@ from typing import Any
 from omnivia_core.chat_contract.v1 import ChatContractDecodeError, to_canonical_json
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_part_registry import (
+    CHART_PART_TYPE,
     METRIC_NUMBER_PART_TYPE,
     PRESENTATION_ONLY_PART_TYPES,
     RICH_PROSE_PART_TYPE,
@@ -138,6 +139,20 @@ def _message_text_parts(
                 {
                     "kind": "text",
                     "text": "Metric:\n" + to_canonical_json(dict(part.payload)),
+                }
+            )
+            continue
+        if part.part_type == CHART_PART_TYPE:
+            try:
+                validate_registered_payload(CHART_PART_TYPE, part.payload)
+            except PartPayloadInvalid as error:
+                raise ChatCompactionConflict(
+                    "the selected chat lineage contains a malformed chart"
+                ) from error
+            parts.append(
+                {
+                    "kind": "text",
+                    "text": "Chart:\n" + to_canonical_json(dict(part.payload)),
                 }
             )
             continue

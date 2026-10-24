@@ -77,6 +77,8 @@ from omnivia_core.chat_contract.v1.generated import (
 )
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_part_registry import (
+    CHART_PART_TYPE,
+    CHART_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
@@ -1606,6 +1608,7 @@ def append_provider_structured_output(
         )
     schema_ref = _wire_str(provider_event, "schemaRef")
     if schema_ref not in {
+        CHART_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     }:
@@ -1627,6 +1630,10 @@ def append_provider_structured_output(
         and normalized_output["unit"] is None
     ):
         del normalized_output["unit"]
+    if schema_ref == CHART_RESPONSE_SCHEMA_REF:
+        for optional_field in ("detail", "unit"):
+            if normalized_output.get(optional_field) is None:
+                normalized_output.pop(optional_field, None)
     try:
         output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
@@ -1642,10 +1649,14 @@ def append_provider_structured_output(
         part_type = RICH_PROSE_PART_TYPE
         part_payload = {"blocks": [{**normalized_output, "kind": "table"}]}
         schema_label = "data-table"
-    else:
+    elif schema_ref == NUMBER_TICKER_RESPONSE_SCHEMA_REF:
         part_type = METRIC_NUMBER_PART_TYPE
         part_payload = normalized_output
         schema_label = "number-ticker"
+    else:
+        part_type = CHART_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "chart"
     try:
         validate_registered_payload(part_type, part_payload)
     except PartPayloadInvalid:
