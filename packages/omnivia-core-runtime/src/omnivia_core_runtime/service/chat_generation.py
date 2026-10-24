@@ -89,6 +89,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     RICH_PROSE_PART_TYPE,
+    SPEC_SHEET_PART_TYPE,
+    SPEC_SHEET_RESPONSE_SCHEMA_REF,
     PartPayloadInvalid,
     validate_registered_payload,
 )
@@ -1620,6 +1622,7 @@ def append_provider_structured_output(
         DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
         MATH_STEPS_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
+        SPEC_SHEET_RESPONSE_SCHEMA_REF,
     }:
         raise UnsupportedProviderEvent(
             "provider event field 'schemaRef' is not an allow-listed structured schema"
@@ -1664,6 +1667,11 @@ def append_provider_structured_output(
                 else candidate
                 for candidate in steps
             ]
+    if (
+        schema_ref == SPEC_SHEET_RESPONSE_SCHEMA_REF
+        and normalized_output.get("detail") is None
+    ):
+        normalized_output.pop("detail", None)
     try:
         output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
@@ -1695,10 +1703,14 @@ def append_provider_structured_output(
         part_type = DIAGRAM_FLOW_PART_TYPE
         part_payload = normalized_output
         schema_label = "diagram-flow"
-    else:
+    elif schema_ref == MATH_STEPS_RESPONSE_SCHEMA_REF:
         part_type = MATH_STEPS_PART_TYPE
         part_payload = normalized_output
         schema_label = "math-steps"
+    else:
+        part_type = SPEC_SHEET_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "spec-sheet"
     try:
         validate_registered_payload(part_type, part_payload)
     except PartPayloadInvalid:

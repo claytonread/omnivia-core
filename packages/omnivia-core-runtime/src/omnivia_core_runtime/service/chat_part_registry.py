@@ -43,6 +43,8 @@ produces it. The families below are written by Core today:
   validated structured activity-series response producer.
 * `math.steps` -- `service/chat_generation_executor.py`, from only the
   validated structured-math response producer.
+* `spec.sheet` -- `service/chat_generation_executor.py`, from only the
+  validated structured specification-sheet response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -93,6 +95,8 @@ __all__ = [
     "REGISTERED_PART_TYPES",
     "RESPONSE_FORMAT_PART_TYPE",
     "RICH_PROSE_PART_TYPE",
+    "SPEC_SHEET_PART_TYPE",
+    "SPEC_SHEET_RESPONSE_SCHEMA_REF",
     "TEXT_PART_TYPE",
     "TOOL_CALL_PART_TYPE",
     "WEB_SEARCH_PART_TYPE",
@@ -147,6 +151,7 @@ CHART_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.chart.v1"
 DIAGRAM_FLOW_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.diagram-flow.v1"
 ACTIVITY_SERIES_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.activity-series.v1"
 MATH_STEPS_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.math-steps.v1"
+SPEC_SHEET_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.spec-sheet.v1"
 
 #: The existing Platform typed-part family that owns the table block. Core emits
 #: only the one-block table subset below; registering the whole renderer vocabulary
@@ -167,6 +172,9 @@ ACTIVITY_SERIES_PART_TYPE: Final = "activity.series"
 
 #: One exact bounded structured-math derivation emitted by the math producer.
 MATH_STEPS_PART_TYPE: Final = "math.steps"
+
+#: One exact bounded text-only specification sheet emitted by its producer.
+SPEC_SHEET_PART_TYPE: Final = "spec.sheet"
 
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
@@ -200,6 +208,11 @@ MATH_STEPS_MAX_LABEL_UTF8_BYTES: Final = 256
 MATH_STEPS_MAX_NOTE_UTF8_BYTES: Final = 1_024
 MATH_STEPS_MAX_TEXT_UTF8_BYTES: Final = 512
 MATH_STEPS_MAX_TOTAL_TEXT_UTF8_BYTES: Final = 8_192
+SPEC_SHEET_MAX_ROWS: Final = 64
+SPEC_SHEET_MAX_TITLE_UTF8_BYTES: Final = 256
+SPEC_SHEET_MAX_DETAIL_UTF8_BYTES: Final = 4_096
+SPEC_SHEET_MAX_LABEL_UTF8_BYTES: Final = 256
+SPEC_SHEET_MAX_VALUE_UTF8_BYTES: Final = 4_096
 _WORKSPACE_SCOPED_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 #: Exact Core-authored families that are transcript presentation, not F2a
@@ -403,6 +416,7 @@ def _validate_response_format(payload: Mapping[str, Any]) -> None:
         DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
         MATH_STEPS_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
+        SPEC_SHEET_RESPONSE_SCHEMA_REF,
     }:
         raise PartPayloadInvalid("schemaRef", "is not a registered response schema")
 
@@ -865,6 +879,49 @@ def _validate_math_steps(payload: Mapping[str, Any]) -> None:
         )
 
 
+def _validate_spec_sheet(payload: Mapping[str, Any]) -> None:
+    """The exact bounded text-only shape mounted by Platform's Spec Sheet."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "items"}),
+        optional=frozenset({"detail"}),
+    )
+    title = payload["title"]
+    if not isinstance(title, str) or title == "":
+        raise PartPayloadInvalid("title", "must be a non-empty string")
+    if len(title.encode("utf-8")) > SPEC_SHEET_MAX_TITLE_UTF8_BYTES:
+        raise PartPayloadInvalid("title", "must be at most 256 UTF-8 bytes")
+    if "detail" in payload:
+        detail = payload["detail"]
+        if not isinstance(detail, str):
+            raise PartPayloadInvalid("detail", "must be a string")
+        if len(detail.encode("utf-8")) > SPEC_SHEET_MAX_DETAIL_UTF8_BYTES:
+            raise PartPayloadInvalid("detail", "must be at most 4096 UTF-8 bytes")
+    items = payload["items"]
+    if not isinstance(items, list) or not 1 <= len(items) <= SPEC_SHEET_MAX_ROWS:
+        raise PartPayloadInvalid("items", "must contain between 1 and 64 rows")
+    for index, candidate in enumerate(items):
+        prefix = f"items[{index}]."
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(prefix[:-1], "must be an object")
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"label", "value"}),
+            optional=frozenset(),
+            prefix=prefix,
+        )
+        label = candidate["label"]
+        if not isinstance(label, str) or label == "":
+            raise PartPayloadInvalid(f"{prefix}label", "must be a non-empty string")
+        if len(label.encode("utf-8")) > SPEC_SHEET_MAX_LABEL_UTF8_BYTES:
+            raise PartPayloadInvalid(f"{prefix}label", "must be at most 256 UTF-8 bytes")
+        value = candidate["value"]
+        if not isinstance(value, str):
+            raise PartPayloadInvalid(f"{prefix}value", "must be a string")
+        if len(value.encode("utf-8")) > SPEC_SHEET_MAX_VALUE_UTF8_BYTES:
+            raise PartPayloadInvalid(f"{prefix}value", "must be at most 4096 UTF-8 bytes")
+
+
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
     """The exact one-table rich-prose subset emitted by the structured producer."""
     _require_exact_keys(payload, required=frozenset({"blocks"}), optional=frozenset())
@@ -931,6 +988,7 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     RICH_PROSE_PART_TYPE: _validate_rich_prose_table,
     METRIC_NUMBER_PART_TYPE: _validate_metric_number,
     MATH_STEPS_PART_TYPE: _validate_math_steps,
+    SPEC_SHEET_PART_TYPE: _validate_spec_sheet,
 }
 
 #: The registered family names, for a caller that wants to report the registry

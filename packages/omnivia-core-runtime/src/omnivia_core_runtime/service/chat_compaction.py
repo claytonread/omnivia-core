@@ -26,6 +26,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     METRIC_NUMBER_PART_TYPE,
     PRESENTATION_ONLY_PART_TYPES,
     RICH_PROSE_PART_TYPE,
+    SPEC_SHEET_PART_TYPE,
     PartPayloadInvalid,
     validate_registered_payload,
 )
@@ -198,6 +199,20 @@ def _message_text_parts(
                 {
                     "kind": "text",
                     "text": "Math:\n" + to_canonical_json(dict(part.payload)),
+                }
+            )
+            continue
+        if part.part_type == SPEC_SHEET_PART_TYPE:
+            try:
+                validate_registered_payload(SPEC_SHEET_PART_TYPE, part.payload)
+            except PartPayloadInvalid as error:
+                raise ChatCompactionConflict(
+                    "the selected chat lineage contains a malformed specification sheet"
+                ) from error
+            parts.append(
+                {
+                    "kind": "text",
+                    "text": "Specification:\n" + to_canonical_json(dict(part.payload)),
                 }
             )
             continue

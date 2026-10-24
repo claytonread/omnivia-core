@@ -42,6 +42,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     REGISTERED_PART_TYPES,
     RESPONSE_FORMAT_PART_TYPE,
     RICH_PROSE_PART_TYPE,
+    SPEC_SHEET_PART_TYPE,
+    SPEC_SHEET_RESPONSE_SCHEMA_REF,
     TEXT_PART_TYPE,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
@@ -82,6 +84,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   diagram.flow validated structured directed graph materialised by the executor
     #   activity.series validated structured UTC calendar series materialised by the executor
     #   math.steps  validated structured-math derivation materialised by the executor
+    #   spec.sheet  validated text-only specification sheet materialised by the executor
     assert REGISTERED_PART_TYPES == (
         ACTIVITY_SERIES_PART_TYPE,
         ATTACHMENT_PART_TYPE,
@@ -93,6 +96,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
         REASONING_SUMMARY_PART_TYPE,
         RESPONSE_FORMAT_PART_TYPE,
         RICH_PROSE_PART_TYPE,
+        SPEC_SHEET_PART_TYPE,
         TEXT_PART_TYPE,
         TOOL_CALL_PART_TYPE,
         WEB_SEARCH_PART_TYPE,
@@ -110,6 +114,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(DIAGRAM_FLOW_PART_TYPE)
     assert is_registered_part_type(ACTIVITY_SERIES_PART_TYPE)
     assert is_registered_part_type(MATH_STEPS_PART_TYPE)
+    assert is_registered_part_type(SPEC_SHEET_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -227,6 +232,10 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
     validate_registered_payload(
         RESPONSE_FORMAT_PART_TYPE,
         {"schemaRef": MATH_STEPS_RESPONSE_SCHEMA_REF},
+    )
+    validate_registered_payload(
+        RESPONSE_FORMAT_PART_TYPE,
+        {"schemaRef": SPEC_SHEET_RESPONSE_SCHEMA_REF},
     )
     for bad, field in (
         ({}, "schemaRef"),
@@ -467,6 +476,38 @@ def test_math_steps_is_exact_bounded_and_recursively_closed() -> None:
     for bad, field in cases:
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(MATH_STEPS_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_spec_sheet_is_exact_text_only_and_bounded() -> None:
+    valid = {
+        "title": "Runtime specification",
+        "detail": "Observed configuration",
+        "items": [
+            {"label": "Provider", "value": "OpenAI"},
+            {"label": "Model", "value": "gpt-5"},
+        ],
+    }
+    validate_registered_payload(SPEC_SHEET_PART_TYPE, valid)
+    validate_registered_payload(
+        SPEC_SHEET_PART_TYPE,
+        {"title": "Runtime", "items": [{"label": "Empty", "value": ""}]},
+    )
+    cases = (
+        ({"title": "Runtime", "items": []}, "items"),
+        ({"title": "", "items": [{"label": "A", "value": "B"}]}, "title"),
+        ({"title": "é" * 129, "items": [{"label": "A", "value": "B"}]}, "title"),
+        ({**valid, "detail": "é" * 2_049}, "detail"),
+        ({**valid, "items": [{"label": "", "value": "B"}]}, "items[0].label"),
+        ({**valid, "items": [{"label": "é" * 129, "value": "B"}]}, "items[0].label"),
+        ({**valid, "items": [{"label": "A", "value": "é" * 2_049}]}, "items[0].value"),
+        ({**valid, "items": [{"label": "A", "value": 1}]}, "items[0].value"),
+        ({**valid, "items": [{"label": "A", "value": "B", "action": "run"}]}, "items[0].action"),
+        ({**valid, "controls": []}, "controls"),
+    )
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(SPEC_SHEET_PART_TYPE, bad)
         assert refused.value.field == field
 
 
