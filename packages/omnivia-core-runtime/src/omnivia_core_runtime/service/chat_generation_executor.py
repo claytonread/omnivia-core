@@ -68,6 +68,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    METRIC_NUMBER_PART_TYPE,
+    NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     PRESENTATION_ONLY_PART_TYPES,
     REASONING_SUMMARY_PART_TYPE,
     RESPONSE_FORMAT_PART_TYPE,
@@ -239,6 +241,17 @@ def _data_table_provider_text(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _metric_number_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed numeric metric."""
+    try:
+        validate_registered_payload(METRIC_NUMBER_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed numeric metric"
+        ) from error
+    return "Metric:\n" + to_canonical_json(dict(payload))
+
+
 def _trigger_response_format(
     connection: sqlite3.Connection,
     *,
@@ -266,7 +279,7 @@ def _trigger_response_format(
         ) from error
     return {
         "kind": "structured",
-        "schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF,
+        "schemaRef": directive.payload["schemaRef"],
     }
 
 
@@ -346,6 +359,10 @@ def _provider_context(
             elif part.part_type == RICH_PROSE_PART_TYPE:
                 provider_parts.append(
                     {"kind": "text", "text": _data_table_provider_text(part.payload)}
+                )
+            elif part.part_type == METRIC_NUMBER_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _metric_number_provider_text(part.payload)}
                 )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None
@@ -733,17 +750,22 @@ def guardrail_notice_part_payload() -> dict[str, Any]:
     }
 
 
-def structured_output_part_payload(
+def structured_output_message_part(
     output: chat.GenerationStructuredOutput,
-) -> dict[str, Any]:
-    if output.schema_ref != DATA_TABLE_RESPONSE_SCHEMA_REF:
+) -> tuple[str, dict[str, Any]]:
+    if output.schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
+        part_type = RICH_PROSE_PART_TYPE
+        payload = {"blocks": [{**dict(output.output), "kind": "table"}]}
+    elif output.schema_ref == NUMBER_TICKER_RESPONSE_SCHEMA_REF:
+        part_type = METRIC_NUMBER_PART_TYPE
+        payload = dict(output.output)
+    else:
         raise GenerationExecutorError("the structured output schema is unsupported")
-    payload = {"blocks": [{**dict(output.output), "kind": "table"}]}
     try:
-        validate_registered_payload(RICH_PROSE_PART_TYPE, payload)
+        validate_registered_payload(part_type, payload)
     except PartPayloadInvalid as error:
         raise GenerationExecutorError("the structured output is malformed") from error
-    return payload
+    return part_type, payload
 
 
 def _message_parts(
@@ -769,10 +791,7 @@ def _message_parts(
         # A text-only commit keeps its text part whatever it holds, so no pre-C9
         # message changes meaning; only typed non-text content can omit it.
         parts.append(("text", {"text": text}))
-    parts.extend(
-        (RICH_PROSE_PART_TYPE, structured_output_part_payload(output))
-        for output in structured_outputs
-    )
+    parts.extend(structured_output_message_part(output) for output in structured_outputs)
     if guardrail_notice:
         parts.append((GUARDRAIL_NOTICE_PART_TYPE, guardrail_notice_part_payload()))
     parts.extend(_tool_call_message_part(call) for call in tool_calls)
@@ -1326,8 +1345,8 @@ class ChatGenerationExecutor:
                     # event vocabulary for ordinary text/tool streams. Those
                     # events retain their pre-table behaviour and fall through
                     # to the identity-only generation-event projection below.
-                    # Only an explicitly requested structured response enters
-                    # the governed data-table ledger.
+                    # Only an explicitly requested, allow-listed structured
+                    # response enters the governed structured-output ledger.
                     if structured_outputs:
                         raise GenerationExecutorError(
                             "a structured provider response emitted more than one output"
@@ -2294,6 +2313,9 @@ class ChatGenerationExecutor:
                 elif part_type == RICH_PROSE_PART_TYPE:
                     validate_registered_payload(part_type, payload)
                     part_id = _stable_id("assistant-table-part", job.generation_job_id)
+                elif part_type == METRIC_NUMBER_PART_TYPE:
+                    validate_registered_payload(part_type, payload)
+                    part_id = _stable_id("assistant-metric-part", job.generation_job_id)
                 else:
                     part_id = _stable_id("assistant-part", job.generation_job_id)
                 writer.append_message_part(

@@ -19,6 +19,7 @@ from typing import Any
 from omnivia_core.chat_contract.v1 import ChatContractDecodeError, to_canonical_json
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_part_registry import (
+    METRIC_NUMBER_PART_TYPE,
     PRESENTATION_ONLY_PART_TYPES,
     RICH_PROSE_PART_TYPE,
     PartPayloadInvalid,
@@ -123,6 +124,20 @@ def _message_text_parts(
                     + to_canonical_json(
                         {"cols": block["cols"], "rows": block["rows"]}
                     ),
+                }
+            )
+            continue
+        if part.part_type == METRIC_NUMBER_PART_TYPE:
+            try:
+                validate_registered_payload(METRIC_NUMBER_PART_TYPE, part.payload)
+            except PartPayloadInvalid as error:
+                raise ChatCompactionConflict(
+                    "the selected chat lineage contains a malformed numeric metric"
+                ) from error
+            parts.append(
+                {
+                    "kind": "text",
+                    "text": "Metric:\n" + to_canonical_json(dict(part.payload)),
                 }
             )
             continue

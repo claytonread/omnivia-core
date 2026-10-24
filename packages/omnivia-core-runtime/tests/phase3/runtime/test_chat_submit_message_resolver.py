@@ -31,6 +31,7 @@ from omnivia_core_runtime.service.chat_generation_executor import (
 )
 from omnivia_core_runtime.service.chat_part_registry import (
     DATA_TABLE_RESPONSE_SCHEMA_REF,
+    NUMBER_TICKER_RESPONSE_SCHEMA_REF,
 )
 from omnivia_core_runtime.service.chat_submit import (
     resolve_chat_command,
@@ -1791,8 +1792,13 @@ def test_gb01_malformed_submit_message_refuses_before_any_durable_write(
     assert _counts(seeded) == before
 
 
-def test_gb01_submit_persists_one_internal_data_table_response_directive(
+@pytest.mark.parametrize(
+    "schema_ref",
+    (DATA_TABLE_RESPONSE_SCHEMA_REF, NUMBER_TICKER_RESPONSE_SCHEMA_REF),
+)
+def test_gb01_submit_persists_one_internal_structured_response_directive(
     seeded: m1.Owned,
+    schema_ref: str,
 ) -> None:
     response = _dispatcher(seeded).dispatch(
         _request(
@@ -1802,7 +1808,7 @@ def test_gb01_submit_persists_one_internal_data_table_response_directive(
                     {
                         "type": "response.format",
                         "visibility": "internal",
-                        "payload": {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
+                        "payload": {"schemaRef": schema_ref},
                     },
                 )
             )
@@ -1819,7 +1825,7 @@ def test_gb01_submit_persists_one_internal_data_table_response_directive(
         (
             "response.format",
             "internal",
-            {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
+            {"schemaRef": schema_ref},
         ),
     ]
 

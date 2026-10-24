@@ -33,6 +33,8 @@ produces it. The families below are written by Core today:
   composer directive naming one allow-listed structured response schema.
 * `rich.prose` -- `service/chat_generation_executor.py`, currently from only
   the validated structured data-table response producer.
+* `metric.number` -- `service/chat_generation_executor.py`, from only the
+  validated structured number-ticker response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -52,6 +54,7 @@ know this family".
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -64,6 +67,8 @@ __all__ = [
     "GUARDRAIL_NOTICE_PART_TYPE",
     "GUARDRAIL_NOTICE_REASON",
     "GUARDRAIL_NOTICE_SAFE_MESSAGE",
+    "METRIC_NUMBER_PART_TYPE",
+    "NUMBER_TICKER_RESPONSE_SCHEMA_REF",
     "PART_REGISTRY_VERSION",
     "PRESENTATION_ONLY_PART_TYPES",
     "REASONING_SUMMARY_PART_TYPE",
@@ -113,21 +118,29 @@ GUARDRAIL_NOTICE_REASON: Final = "content-filter"
 GUARDRAIL_NOTICE_SAFE_MESSAGE: Final = "The provider filtered some or all of this response."
 
 #: One explicit composer-to-Core request for the next assistant response. The
-#: schema reference is opaque on F2a but closed here because Core has exactly one
-#: structured-output producer today; an arbitrary schema reference would create
-#: provider output Core could neither validate nor materialise.
+#: schema reference is opaque on F2a but closed here because Core can execute
+#: only the exact structured-output producers registered below. An arbitrary
+#: schema reference would create provider output Core could neither validate nor
+#: materialise.
 RESPONSE_FORMAT_PART_TYPE: Final = "response.format"
 DATA_TABLE_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.data-table.v1"
+NUMBER_TICKER_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.number-ticker.v1"
 
 #: The existing Platform typed-part family that owns the table block. Core emits
 #: only the one-block table subset below; registering the whole renderer vocabulary
 #: would again describe shapes that have no producer.
 RICH_PROSE_PART_TYPE: Final = "rich.prose"
 
+#: One exact numeric answer emitted by the number-ticker structured producer.
+METRIC_NUMBER_PART_TYPE: Final = "metric.number"
+
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
 DATA_TABLE_MAX_COLUMN_UTF8_BYTES: Final = 256
 DATA_TABLE_MAX_CELL_UTF8_BYTES: Final = 4_096
+NUMBER_TICKER_MAX_LABEL_UTF8_BYTES: Final = 256
+NUMBER_TICKER_MAX_UNIT_UTF8_BYTES: Final = 64
+NUMBER_TICKER_MAX_ABS_VALUE: Final = 1_000_000_000_000_000
 
 #: Exact Core-authored families that are transcript presentation, not F2a
 #: provider prompt content. Keeping this taxonomy beside the part registry gives
@@ -323,8 +336,45 @@ def _validate_response_format(payload: Mapping[str, Any]) -> None:
         optional=frozenset(),
     )
     _require_text(payload, "schemaRef", maximum=512)
-    if payload["schemaRef"] != DATA_TABLE_RESPONSE_SCHEMA_REF:
+    if payload["schemaRef"] not in {
+        DATA_TABLE_RESPONSE_SCHEMA_REF,
+        NUMBER_TICKER_RESPONSE_SCHEMA_REF,
+    }:
         raise PartPayloadInvalid("schemaRef", "is not a registered response schema")
+
+
+def _require_metric_text(payload: Mapping[str, Any], field: str, *, maximum: int) -> None:
+    _require_text(payload, field, maximum=maximum)
+    value = payload[field]
+    if (
+        value == ""
+        or value.strip() != value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise PartPayloadInvalid(field, "must be non-empty, trimmed and control-free")
+
+
+def _validate_metric_number(payload: Mapping[str, Any]) -> None:
+    """The exact finite answer metric emitted by the structured producer."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"label", "value"}),
+        optional=frozenset({"unit"}),
+    )
+    _require_metric_text(payload, "label", maximum=NUMBER_TICKER_MAX_LABEL_UTF8_BYTES)
+    if "unit" in payload:
+        _require_metric_text(payload, "unit", maximum=NUMBER_TICKER_MAX_UNIT_UTF8_BYTES)
+    value = payload["value"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PartPayloadInvalid("value", "must be a number")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise PartPayloadInvalid("value", "must be finite")
+    if value == 0 and isinstance(value, float) and math.copysign(1.0, value) < 0:
+        raise PartPayloadInvalid("value", "must not be negative zero")
+    if abs(value) > NUMBER_TICKER_MAX_ABS_VALUE:
+        raise PartPayloadInvalid(
+            "value", "must have absolute value at most 1000000000000000"
+        )
 
 
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
@@ -388,6 +438,7 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     GUARDRAIL_NOTICE_PART_TYPE: _validate_guardrail_notice,
     RESPONSE_FORMAT_PART_TYPE: _validate_response_format,
     RICH_PROSE_PART_TYPE: _validate_rich_prose_table,
+    METRIC_NUMBER_PART_TYPE: _validate_metric_number,
 }
 
 #: The registered family names, for a caller that wants to report the registry

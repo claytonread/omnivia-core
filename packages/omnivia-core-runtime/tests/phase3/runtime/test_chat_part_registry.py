@@ -27,6 +27,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    METRIC_NUMBER_PART_TYPE,
+    NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     PART_REGISTRY_VERSION,
     REASONING_SUMMARY_PART_TYPE,
     REGISTERED_PART_TYPES,
@@ -67,9 +69,11 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #               with fixed Core-authored display-safe copy
     #   response.format  explicit internal submit directive for one allow-listed schema
     #   rich.prose  validated structured data-table output materialised by the executor
+    #   metric.number  validated number-ticker output materialised by the executor
     assert REGISTERED_PART_TYPES == (
         ATTACHMENT_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
+        METRIC_NUMBER_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
         RESPONSE_FORMAT_PART_TYPE,
         RICH_PROSE_PART_TYPE,
@@ -85,6 +89,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(GUARDRAIL_NOTICE_PART_TYPE)
     assert is_registered_part_type(RESPONSE_FORMAT_PART_TYPE)
     assert is_registered_part_type(RICH_PROSE_PART_TYPE)
+    assert is_registered_part_type(METRIC_NUMBER_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -183,6 +188,10 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
         RESPONSE_FORMAT_PART_TYPE,
         {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
     )
+    validate_registered_payload(
+        RESPONSE_FORMAT_PART_TYPE,
+        {"schemaRef": NUMBER_TICKER_RESPONSE_SCHEMA_REF},
+    )
     for bad, field in (
         ({}, "schemaRef"),
         ({"schemaRef": "arbitrary.schema"}, "schemaRef"),
@@ -190,6 +199,37 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
     ):
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(RESPONSE_FORMAT_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_metric_number_is_exact_bounded_finite_and_control_free() -> None:
+    validate_registered_payload(
+        METRIC_NUMBER_PART_TYPE,
+        {"label": "Monthly active users", "value": 12_500, "unit": "users"},
+    )
+    validate_registered_payload(
+        METRIC_NUMBER_PART_TYPE,
+        {"label": "Conversion rate", "value": 0.125},
+    )
+    cases = (
+        ({"value": 1}, "label"),
+        ({"label": "", "value": 1}, "label"),
+        ({"label": " padded", "value": 1}, "label"),
+        ({"label": "line\nbreak", "value": 1}, "label"),
+        ({"label": "x" * 257, "value": 1}, "label"),
+        ({"label": "Metric", "value": True}, "value"),
+        ({"label": "Metric", "value": float("inf")}, "value"),
+        ({"label": "Metric", "value": float("nan")}, "value"),
+        ({"label": "Metric", "value": -0.0}, "value"),
+        ({"label": "Metric", "value": 10**1_000}, "value"),
+        ({"label": "Metric", "value": 1_000_000_000_000_001}, "value"),
+        ({"label": "Metric", "value": 1, "unit": ""}, "unit"),
+        ({"label": "Metric", "value": 1, "unit": "x" * 65}, "unit"),
+        ({"label": "Metric", "value": 1, "html": "<script>x</script>"}, "html"),
+    )
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(METRIC_NUMBER_PART_TYPE, bad)
         assert refused.value.field == field
 
 

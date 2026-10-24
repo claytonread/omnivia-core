@@ -78,6 +78,8 @@ from omnivia_core.chat_contract.v1.generated import (
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_part_registry import (
     DATA_TABLE_RESPONSE_SCHEMA_REF,
+    METRIC_NUMBER_PART_TYPE,
+    NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     RICH_PROSE_PART_TYPE,
     PartPayloadInvalid,
     validate_registered_payload,
@@ -1589,9 +1591,9 @@ def append_provider_structured_output(
     """Persist one allow-listed structured response before the stream advances.
 
     F2a deliberately treats `schemaRef` as opaque. Core does not: it accepts only
-    the one schema it can validate and materialise today, and stores its canonical
-    object in the append-only structured-output ledger. The provider event's
-    `output` is never copied into a generation-event payload.
+    schemas it can validate and materialise, and stores the canonical object in
+    the append-only structured-output ledger. The provider event's `output` is
+    never copied into a generation-event payload.
 
     A provider event id makes exact redelivery idempotent. Conflicting reuse,
     malformed or oversized output, a second output for the Attempt, or an output
@@ -1603,7 +1605,10 @@ def append_provider_structured_output(
             "provider event field 'eventType' is not 'structured-output'"
         )
     schema_ref = _wire_str(provider_event, "schemaRef")
-    if schema_ref != DATA_TABLE_RESPONSE_SCHEMA_REF:
+    if schema_ref not in {
+        DATA_TABLE_RESPONSE_SCHEMA_REF,
+        NUMBER_TICKER_RESPONSE_SCHEMA_REF,
+    }:
         raise UnsupportedProviderEvent(
             "provider event field 'schemaRef' is not an allow-listed structured schema"
         )
@@ -1621,19 +1626,24 @@ def append_provider_structured_output(
             "provider event field 'output' exceeds the structured-output byte bound"
         )
 
-    table_payload = {
-        "blocks": [{**dict(output), "kind": "table"}],
-    }
+    if schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
+        part_type = RICH_PROSE_PART_TYPE
+        part_payload = {"blocks": [{**dict(output), "kind": "table"}]}
+        schema_label = "data-table"
+    else:
+        part_type = METRIC_NUMBER_PART_TYPE
+        part_payload = dict(output)
+        schema_label = "number-ticker"
     try:
-        validate_registered_payload(RICH_PROSE_PART_TYPE, table_payload)
+        validate_registered_payload(part_type, part_payload)
     except PartPayloadInvalid:
         raise UnsupportedProviderEvent(
-            "provider event field 'output' does not match the data-table schema"
+            f"provider event field 'output' does not match the {schema_label} schema"
         ) from None
 
     if output_ordinal != 0:
         raise GenerationSequenceGap(
-            "a data-table structured output must be the Attempt's sole output at ordinal zero"
+            "a structured output must be the Attempt's sole output at ordinal zero"
         )
 
     job = chat.read_generation_job(
