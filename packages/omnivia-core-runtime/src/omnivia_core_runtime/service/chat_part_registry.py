@@ -37,6 +37,8 @@ produces it. The families below are written by Core today:
   validated structured number-ticker response producer.
 * `chart` -- `service/chat_generation_executor.py`, from only the validated
   structured chart response producer.
+* `diagram.flow` -- `service/chat_generation_executor.py`, from only the
+  validated structured diagram-flow response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -57,6 +59,7 @@ know this family".
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -68,6 +71,8 @@ __all__ = [
     "CHART_PART_TYPE",
     "CHART_RESPONSE_SCHEMA_REF",
     "DATA_TABLE_RESPONSE_SCHEMA_REF",
+    "DIAGRAM_FLOW_PART_TYPE",
+    "DIAGRAM_FLOW_RESPONSE_SCHEMA_REF",
     "GUARDRAIL_NOTICE_PART_TYPE",
     "GUARDRAIL_NOTICE_REASON",
     "GUARDRAIL_NOTICE_SAFE_MESSAGE",
@@ -130,6 +135,7 @@ RESPONSE_FORMAT_PART_TYPE: Final = "response.format"
 DATA_TABLE_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.data-table.v1"
 NUMBER_TICKER_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.number-ticker.v1"
 CHART_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.chart.v1"
+DIAGRAM_FLOW_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.diagram-flow.v1"
 
 #: The existing Platform typed-part family that owns the table block. Core emits
 #: only the one-block table subset below; registering the whole renderer vocabulary
@@ -141,6 +147,9 @@ METRIC_NUMBER_PART_TYPE: Final = "metric.number"
 
 #: One exact bounded data-series answer emitted by the chart structured producer.
 CHART_PART_TYPE: Final = "chart"
+
+#: One exact bounded directed graph emitted by the diagram-flow producer.
+DIAGRAM_FLOW_PART_TYPE: Final = "diagram.flow"
 
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
@@ -155,6 +164,13 @@ CHART_MAX_POINTS_PER_SERIES: Final = 64
 CHART_MAX_LABEL_UTF8_BYTES: Final = 256
 CHART_MAX_DETAIL_UTF8_BYTES: Final = 4_096
 CHART_MAX_UNIT_UTF8_BYTES: Final = 64
+DIAGRAM_FLOW_MAX_NODES: Final = 64
+DIAGRAM_FLOW_MAX_EDGES: Final = 128
+DIAGRAM_FLOW_MAX_GRID_INDEX: Final = 15
+DIAGRAM_FLOW_MAX_TITLE_UTF8_BYTES: Final = 256
+DIAGRAM_FLOW_MAX_LABEL_UTF8_BYTES: Final = 128
+DIAGRAM_FLOW_NODE_STATES: Final = frozenset({"done", "active", "pending"})
+_WORKSPACE_SCOPED_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 #: Exact Core-authored families that are transcript presentation, not F2a
 #: provider prompt content. Keeping this taxonomy beside the part registry gives
@@ -353,6 +369,7 @@ def _validate_response_format(payload: Mapping[str, Any]) -> None:
     if payload["schemaRef"] not in {
         CHART_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
+        DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     }:
         raise PartPayloadInvalid("schemaRef", "is not a registered response schema")
@@ -473,6 +490,111 @@ def _validate_chart(payload: Mapping[str, Any]) -> None:
                 raise PartPayloadInvalid(f"{point_prefix}value", "must be finite")
 
 
+def _require_diagram_text(
+    payload: Mapping[str, Any],
+    field: str,
+    *,
+    maximum: int,
+    prefix: str = "",
+) -> None:
+    """Require the renderer's exact non-empty, trimmed, control-free text."""
+    try:
+        _require_text(payload, field, maximum=maximum)
+    except PartPayloadInvalid as error:
+        raise PartPayloadInvalid(f"{prefix}{error.field}", error.rule) from None
+    value = payload[field]
+    if (
+        value == ""
+        or value.strip() != value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise PartPayloadInvalid(
+            f"{prefix}{field}", "must be non-empty, trimmed and control-free"
+        )
+
+
+def _validate_diagram_flow(payload: Mapping[str, Any]) -> None:
+    """The exact finite topology accepted by Platform's Diagram / Flow Graph."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "nodes", "edges"}),
+        optional=frozenset(),
+    )
+    _require_diagram_text(
+        payload,
+        "title",
+        maximum=DIAGRAM_FLOW_MAX_TITLE_UTF8_BYTES,
+    )
+    nodes = payload["nodes"]
+    if not isinstance(nodes, list) or not 1 <= len(nodes) <= DIAGRAM_FLOW_MAX_NODES:
+        raise PartPayloadInvalid("nodes", "must contain between 1 and 64 nodes")
+    node_ids: set[str] = set()
+    for index, candidate in enumerate(nodes):
+        prefix = f"nodes[{index}]."
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(prefix[:-1], "must be an object")
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"id", "label", "column", "row", "state"}),
+            optional=frozenset(),
+            prefix=prefix,
+        )
+        node_id = candidate["id"]
+        if not isinstance(node_id, str) or _WORKSPACE_SCOPED_ID.fullmatch(node_id) is None:
+            raise PartPayloadInvalid(f"{prefix}id", "must be a workspace-scoped id")
+        if node_id in node_ids:
+            raise PartPayloadInvalid(f"{prefix}id", "must be unique within the graph")
+        node_ids.add(node_id)
+        _require_diagram_text(
+            candidate,
+            "label",
+            maximum=DIAGRAM_FLOW_MAX_LABEL_UTF8_BYTES,
+            prefix=prefix,
+        )
+        for field in ("column", "row"):
+            coordinate = candidate[field]
+            if (
+                isinstance(coordinate, bool)
+                or not isinstance(coordinate, int)
+                or not 0 <= coordinate <= DIAGRAM_FLOW_MAX_GRID_INDEX
+            ):
+                raise PartPayloadInvalid(
+                    f"{prefix}{field}", "must be an integer from 0 through 15"
+                )
+        state = candidate["state"]
+        if not isinstance(state, str) or state not in DIAGRAM_FLOW_NODE_STATES:
+            raise PartPayloadInvalid(
+                f"{prefix}state", "must be done, active or pending"
+            )
+
+    edges = payload["edges"]
+    if not isinstance(edges, list) or len(edges) > DIAGRAM_FLOW_MAX_EDGES:
+        raise PartPayloadInvalid("edges", "must contain at most 128 edges")
+    edge_keys: set[tuple[str, str]] = set()
+    for index, candidate in enumerate(edges):
+        prefix = f"edges[{index}]."
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(prefix[:-1], "must be an object")
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"from", "to"}),
+            optional=frozenset(),
+            prefix=prefix,
+        )
+        source = candidate["from"]
+        target = candidate["to"]
+        if not isinstance(source, str) or source not in node_ids:
+            raise PartPayloadInvalid(f"{prefix}from", "must name an existing node")
+        if not isinstance(target, str) or target not in node_ids:
+            raise PartPayloadInvalid(f"{prefix}to", "must name an existing node")
+        if source == target:
+            raise PartPayloadInvalid(prefix[:-1], "must not be a self-edge")
+        edge_key = (source, target)
+        if edge_key in edge_keys:
+            raise PartPayloadInvalid(prefix[:-1], "must not duplicate a directed edge")
+        edge_keys.add(edge_key)
+
+
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
     """The exact one-table rich-prose subset emitted by the structured producer."""
     _require_exact_keys(payload, required=frozenset({"blocks"}), optional=frozenset())
@@ -529,6 +651,7 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     TEXT_PART_TYPE: _validate_text,
     ATTACHMENT_PART_TYPE: _validate_attachment,
     CHART_PART_TYPE: _validate_chart,
+    DIAGRAM_FLOW_PART_TYPE: _validate_diagram_flow,
     REASONING_SUMMARY_PART_TYPE: _validate_reasoning_summary,
     TOOL_CALL_PART_TYPE: _validate_tool_call,
     WEB_SEARCH_PART_TYPE: _validate_web_search,

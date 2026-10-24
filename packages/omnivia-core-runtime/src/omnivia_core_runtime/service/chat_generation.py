@@ -80,6 +80,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
+    DIAGRAM_FLOW_PART_TYPE,
+    DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     RICH_PROSE_PART_TYPE,
@@ -1610,6 +1612,7 @@ def append_provider_structured_output(
     if schema_ref not in {
         CHART_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
+        DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     }:
         raise UnsupportedProviderEvent(
@@ -1653,10 +1656,14 @@ def append_provider_structured_output(
         part_type = METRIC_NUMBER_PART_TYPE
         part_payload = normalized_output
         schema_label = "number-ticker"
-    else:
+    elif schema_ref == CHART_RESPONSE_SCHEMA_REF:
         part_type = CHART_PART_TYPE
         part_payload = normalized_output
         schema_label = "chart"
+    else:
+        part_type = DIAGRAM_FLOW_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "diagram-flow"
     try:
         validate_registered_payload(part_type, part_payload)
     except PartPayloadInvalid:

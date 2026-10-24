@@ -26,6 +26,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
+    DIAGRAM_FLOW_PART_TYPE,
+    DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
@@ -73,9 +75,11 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   rich.prose  validated structured data-table output materialised by the executor
     #   metric.number  validated number-ticker output materialised by the executor
     #   chart       validated structured chart output materialised by the executor
+    #   diagram.flow validated structured directed graph materialised by the executor
     assert REGISTERED_PART_TYPES == (
         ATTACHMENT_PART_TYPE,
         CHART_PART_TYPE,
+        DIAGRAM_FLOW_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
         METRIC_NUMBER_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
@@ -95,6 +99,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(RICH_PROSE_PART_TYPE)
     assert is_registered_part_type(METRIC_NUMBER_PART_TYPE)
     assert is_registered_part_type(CHART_PART_TYPE)
+    assert is_registered_part_type(DIAGRAM_FLOW_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -200,6 +205,10 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
     validate_registered_payload(
         RESPONSE_FORMAT_PART_TYPE,
         {"schemaRef": CHART_RESPONSE_SCHEMA_REF},
+    )
+    validate_registered_payload(
+        RESPONSE_FORMAT_PART_TYPE,
+        {"schemaRef": DIAGRAM_FLOW_RESPONSE_SCHEMA_REF},
     )
     for bad, field in (
         ({}, "schemaRef"),
@@ -312,6 +321,43 @@ def test_chart_is_exact_bounded_and_finite() -> None:
     for bad, field in cases:
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(CHART_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_diagram_flow_is_exact_bounded_and_topologically_closed() -> None:
+    node = {"id": "plan", "label": "Plan", "column": 0, "row": 0, "state": "done"}
+    other = {"id": "ship", "label": "Ship", "column": 1, "row": 0, "state": "active"}
+    valid = {
+        "title": "Release flow",
+        "nodes": [node, other],
+        "edges": [{"from": "plan", "to": "ship"}],
+    }
+    validate_registered_payload(DIAGRAM_FLOW_PART_TYPE, valid)
+    cases = (
+        ({**valid, "title": ""}, "title"),
+        ({**valid, "title": " padded"}, "title"),
+        ({**valid, "title": "line\nbreak"}, "title"),
+        ({**valid, "title": "é" * 129}, "title"),
+        ({**valid, "nodes": []}, "nodes"),
+        ({**valid, "nodes": [node, {**node}]}, "nodes[1].id"),
+        ({**valid, "nodes": [{**node, "id": "bad/id"}]}, "nodes[0].id"),
+        ({**valid, "nodes": [{**node, "label": " label"}]}, "nodes[0].label"),
+        ({**valid, "nodes": [{**node, "column": True}]}, "nodes[0].column"),
+        ({**valid, "nodes": [{**node, "column": 16}]}, "nodes[0].column"),
+        ({**valid, "nodes": [{**node, "row": -1}]}, "nodes[0].row"),
+        ({**valid, "nodes": [{**node, "state": "running"}]}, "nodes[0].state"),
+        ({**valid, "nodes": [{**node, "state": []}]}, "nodes[0].state"),
+        ({**valid, "nodes": [{**node, "command": "run"}]}, "nodes[0].command"),
+        ({**valid, "edges": [{"from": "missing", "to": "ship"}]}, "edges[0].from"),
+        ({**valid, "edges": [{"from": "plan", "to": "missing"}]}, "edges[0].to"),
+        ({**valid, "edges": [{"from": "plan", "to": "plan"}]}, "edges[0]"),
+        ({**valid, "edges": [{"from": "plan", "to": "ship"}] * 2}, "edges[1]"),
+        ({**valid, "edges": [{"from": "plan", "to": "ship", "action": "open"}]}, "edges[0].action"),
+        ({**valid, "html": "<script>x</script>"}, "html"),
+    )
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(DIAGRAM_FLOW_PART_TYPE, bad)
         assert refused.value.field == field
 
 
