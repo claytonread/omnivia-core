@@ -29,6 +29,9 @@ from omnivia_core_runtime.service.chat_generation_executor import (
     ChatGenerationExecutor,
     GenerationExecutorConfig,
 )
+from omnivia_core_runtime.service.chat_part_registry import (
+    DATA_TABLE_RESPONSE_SCHEMA_REF,
+)
 from omnivia_core_runtime.service.chat_submit import (
     resolve_chat_command,
     retry_generation_attempt_id,
@@ -1783,6 +1786,86 @@ def test_gb01_malformed_submit_message_refuses_before_any_durable_write(
         )
     )
 
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+    assert _counts(seeded) == before
+
+
+def test_gb01_submit_persists_one_internal_data_table_response_directive(
+    seeded: m1.Owned,
+) -> None:
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(
+                editable_parts=(
+                    {"type": "text", "payload": {"text": "Compare the routes"}},
+                    {
+                        "type": "response.format",
+                        "visibility": "internal",
+                        "payload": {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
+                    },
+                )
+            )
+        )
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+    parts = chat.read_message_parts(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        message_id="msg-gb01-submitted",
+    )
+    assert [(part.part_type, part.visibility, dict(part.payload)) for part in parts] == [
+        ("text", "standard", {"text": "Compare the routes"}),
+        (
+            "response.format",
+            "internal",
+            {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "editable_parts",
+    (
+        (
+            {
+                "type": "response.format",
+                "payload": {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
+            },
+        ),
+        (
+            {
+                "type": "response.format",
+                "visibility": "internal",
+                "payload": {"schemaRef": "unregistered.schema"},
+            },
+        ),
+        (
+            {
+                "type": "response.format",
+                "visibility": "internal",
+                "payload": {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
+            },
+            {
+                "type": "response.format",
+                "visibility": "internal",
+                "payload": {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
+            },
+        ),
+    ),
+)
+def test_gb01_submit_refuses_invalid_response_format_directives_before_writing(
+    seeded: m1.Owned,
+    editable_parts: tuple[Mapping[str, Any], ...],
+) -> None:
+    before = _counts(seeded)
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(editable_parts=editable_parts),
+            idempotency_key="idem-gb01-bad-response-format",
+            request_id="req-gb01-bad-response-format",
+        )
+    )
     assert isinstance(response, ErrorResponseEnvelope), response
     assert response.error.code == "invalid_request"
     assert _counts(seeded) == before

@@ -29,6 +29,10 @@ produces it. The families below are written by Core today:
   provider-reported `codex.web_search` lifecycle carrying only its query.
 * `guardrail.notice` -- `service/chat_generation_executor.py`, from only the
   provider's closed `content-filter` finish reason and fixed Core-authored copy.
+* `response.format` -- `service/chat_submit.py`, from an explicit internal
+  composer directive naming one allow-listed structured response schema.
+* `rich.prose` -- `service/chat_generation_executor.py`, currently from only
+  the validated structured data-table response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -56,6 +60,7 @@ from typing import Any, Final
 from omnivia_core_runtime.service.chat_attachment_authority import ATTACHMENT_PART_TYPE
 
 __all__ = [
+    "DATA_TABLE_RESPONSE_SCHEMA_REF",
     "GUARDRAIL_NOTICE_PART_TYPE",
     "GUARDRAIL_NOTICE_REASON",
     "GUARDRAIL_NOTICE_SAFE_MESSAGE",
@@ -63,6 +68,8 @@ __all__ = [
     "PRESENTATION_ONLY_PART_TYPES",
     "REASONING_SUMMARY_PART_TYPE",
     "REGISTERED_PART_TYPES",
+    "RESPONSE_FORMAT_PART_TYPE",
+    "RICH_PROSE_PART_TYPE",
     "TEXT_PART_TYPE",
     "TOOL_CALL_PART_TYPE",
     "WEB_SEARCH_PART_TYPE",
@@ -104,6 +111,23 @@ WEB_SEARCH_PART_TYPE: Final = "web.search"
 GUARDRAIL_NOTICE_PART_TYPE: Final = "guardrail.notice"
 GUARDRAIL_NOTICE_REASON: Final = "content-filter"
 GUARDRAIL_NOTICE_SAFE_MESSAGE: Final = "The provider filtered some or all of this response."
+
+#: One explicit composer-to-Core request for the next assistant response. The
+#: schema reference is opaque on F2a but closed here because Core has exactly one
+#: structured-output producer today; an arbitrary schema reference would create
+#: provider output Core could neither validate nor materialise.
+RESPONSE_FORMAT_PART_TYPE: Final = "response.format"
+DATA_TABLE_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.data-table.v1"
+
+#: The existing Platform typed-part family that owns the table block. Core emits
+#: only the one-block table subset below; registering the whole renderer vocabulary
+#: would again describe shapes that have no producer.
+RICH_PROSE_PART_TYPE: Final = "rich.prose"
+
+DATA_TABLE_MAX_COLUMNS: Final = 16
+DATA_TABLE_MAX_ROWS: Final = 100
+DATA_TABLE_MAX_COLUMN_UTF8_BYTES: Final = 256
+DATA_TABLE_MAX_CELL_UTF8_BYTES: Final = 4_096
 
 #: Exact Core-authored families that are transcript presentation, not F2a
 #: provider prompt content. Keeping this taxonomy beside the part registry gives
@@ -291,6 +315,68 @@ def _validate_guardrail_notice(payload: Mapping[str, Any]) -> None:
         raise PartPayloadInvalid("safeMessage", "must be the fixed display-safe message")
 
 
+def _validate_response_format(payload: Mapping[str, Any]) -> None:
+    """One closed internal directive; never provider-visible message content."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"schemaRef"}),
+        optional=frozenset(),
+    )
+    _require_text(payload, "schemaRef", maximum=512)
+    if payload["schemaRef"] != DATA_TABLE_RESPONSE_SCHEMA_REF:
+        raise PartPayloadInvalid("schemaRef", "is not a registered response schema")
+
+
+def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
+    """The exact one-table rich-prose subset emitted by the structured producer."""
+    _require_exact_keys(payload, required=frozenset({"blocks"}), optional=frozenset())
+    blocks = payload["blocks"]
+    if not isinstance(blocks, list) or len(blocks) != 1:
+        raise PartPayloadInvalid("blocks", "must contain exactly one table block")
+    block = blocks[0]
+    if not isinstance(block, Mapping):
+        raise PartPayloadInvalid("blocks[0]", "must be an object")
+    _require_exact_keys(
+        block,
+        required=frozenset({"kind", "cols", "rows"}),
+        optional=frozenset(),
+        prefix="blocks[0].",
+    )
+    if block["kind"] != "table":
+        raise PartPayloadInvalid("blocks[0].kind", "must be table")
+    columns = block["cols"]
+    if (
+        not isinstance(columns, list)
+        or not 1 <= len(columns) <= DATA_TABLE_MAX_COLUMNS
+    ):
+        raise PartPayloadInvalid("blocks[0].cols", "must contain 1 to 16 columns")
+    for index, column in enumerate(columns):
+        if not isinstance(column, str) or column == "":
+            raise PartPayloadInvalid(f"blocks[0].cols[{index}]", "must be a non-empty string")
+        if len(column.encode("utf-8")) > DATA_TABLE_MAX_COLUMN_UTF8_BYTES:
+            raise PartPayloadInvalid(
+                f"blocks[0].cols[{index}]", "must be at most 256 UTF-8 bytes"
+            )
+    rows = block["rows"]
+    if not isinstance(rows, list) or len(rows) > DATA_TABLE_MAX_ROWS:
+        raise PartPayloadInvalid("blocks[0].rows", "must contain at most 100 rows")
+    for row_index, row in enumerate(rows):
+        if not isinstance(row, list) or len(row) != len(columns):
+            raise PartPayloadInvalid(
+                f"blocks[0].rows[{row_index}]", "must be a rectangular row"
+            )
+        for column_index, cell in enumerate(row):
+            if not isinstance(cell, str):
+                raise PartPayloadInvalid(
+                    f"blocks[0].rows[{row_index}][{column_index}]", "must be a string"
+                )
+            if len(cell.encode("utf-8")) > DATA_TABLE_MAX_CELL_UTF8_BYTES:
+                raise PartPayloadInvalid(
+                    f"blocks[0].rows[{row_index}][{column_index}]",
+                    "must be at most 4096 UTF-8 bytes",
+                )
+
+
 #: Every registered family, and the validator for its payload. Closed over the
 #: families Core produces -- see the module docstring on producer-first.
 _VALIDATORS: Final[Mapping[str, Any]] = {
@@ -300,6 +386,8 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     TOOL_CALL_PART_TYPE: _validate_tool_call,
     WEB_SEARCH_PART_TYPE: _validate_web_search,
     GUARDRAIL_NOTICE_PART_TYPE: _validate_guardrail_notice,
+    RESPONSE_FORMAT_PART_TYPE: _validate_response_format,
+    RICH_PROSE_PART_TYPE: _validate_rich_prose_table,
 }
 
 #: The registered family names, for a caller that wants to report the registry

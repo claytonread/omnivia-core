@@ -96,6 +96,7 @@ __all__ = [
     "GenerationJob",
     "GenerationJobStatusProjection",
     "GenerationReasoningSummary",
+    "GenerationStructuredOutput",
     "GenerationTextChunk",
     "Message",
     "MessageDerivation",
@@ -124,6 +125,7 @@ __all__ = [
     "append_generation_event",
     "append_generation_job",
     "append_generation_reasoning_summary",
+    "append_generation_structured_output",
     "append_generation_text_chunk",
     "append_message",
     "append_message_derivation",
@@ -165,6 +167,7 @@ __all__ = [
     "read_generation_job",
     "read_generation_job_status_projection",
     "read_generation_reasoning_summaries",
+    "read_generation_structured_outputs",
     "read_generation_text_chunks",
     "read_message",
     "read_message_feedback",
@@ -645,6 +648,21 @@ class GenerationReasoningSummary:
     provider_part_id: str
     provider_step_id: str
     summary_text: str
+    content_hash: str
+    schema_version: int
+    occurred_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationStructuredOutput:
+    workspace_id: str
+    conversation_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    output_ordinal: int
+    provider_event_id: str | None
+    schema_ref: str
+    output: Mapping[str, Any]
     content_hash: str
     schema_version: int
     occurred_at_us: int
@@ -1627,6 +1645,41 @@ class ChatWriter:
                 provider_part_id,
                 provider_step_id,
                 summary_text,
+                content_hash,
+                schema_version,
+                occurred_at_us,
+            ),
+        )
+
+    def append_generation_structured_output(
+        self,
+        *,
+        conversation_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        output_ordinal: int,
+        schema_ref: str,
+        output: Mapping[str, Any],
+        occurred_at_us: int,
+        provider_event_id: str | None = None,
+        schema_version: int = 1,
+    ) -> None:
+        output_json = _canonical_json_object(output)
+        content_hash = "sha256:" + sha256(output_json.encode("utf-8")).hexdigest()
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_generation_structured_outputs "
+            "(workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+            "output_ordinal, provider_event_id, schema_ref, output_json, content_hash, "
+            "schema_version, occurred_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                generation_job_id,
+                generation_attempt_id,
+                output_ordinal,
+                provider_event_id,
+                schema_ref,
+                output_json,
                 content_hash,
                 schema_version,
                 occurred_at_us,
@@ -3070,6 +3123,23 @@ def append_generation_reasoning_summary(
         fencing_generation=fencing_generation,
     ) as writer:
         writer.append_generation_reasoning_summary(**fields)
+
+
+def append_generation_structured_output(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.append_generation_structured_output(**fields)
 
 
 def append_request_manifest_once(
@@ -4558,6 +4628,63 @@ def read_generation_reasoning_summaries(
     query += " ORDER BY a.attempt_number, s.summary_ordinal"
     rows = connection.execute(query, params).fetchall()
     return tuple(_generation_reasoning_summary_from_row(row) for row in rows)
+
+
+_GENERATION_STRUCTURED_OUTPUT_COLUMNS = (
+    "o.workspace_id, o.conversation_id, o.generation_job_id, o.generation_attempt_id, "
+    "o.output_ordinal, o.provider_event_id, o.schema_ref, o.output_json, "
+    "o.content_hash, o.schema_version, o.occurred_at_us"
+)
+
+
+def _generation_structured_output_from_row(
+    row: tuple[Any, ...],
+) -> GenerationStructuredOutput:
+    output = _verified_json_object(row[7], "chat generation structured output")
+    content_hash = _canonical_json_object_digest(output)
+    if content_hash != row[8]:
+        raise StorageError(
+            "a stored chat generation structured output digest does not match its output"
+        )
+    return GenerationStructuredOutput(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        output_ordinal=row[4],
+        provider_event_id=row[5],
+        schema_ref=row[6],
+        output=output,
+        content_hash=row[8],
+        schema_version=row[9],
+        occurred_at_us=row[10],
+    )
+
+
+def read_generation_structured_outputs(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    generation_job_id: str,
+    generation_attempt_id: str | None = None,
+) -> tuple[GenerationStructuredOutput, ...]:
+    """Read structured outputs in provider order and Attempts in Generation order."""
+    query = (
+        f"SELECT {_GENERATION_STRUCTURED_OUTPUT_COLUMNS} "
+        "FROM omnivia_chat_generation_structured_outputs o "
+        "JOIN omnivia_chat_generation_attempts a "
+        "ON a.workspace_id = o.workspace_id "
+        "AND a.generation_job_id = o.generation_job_id "
+        "AND a.generation_attempt_id = o.generation_attempt_id "
+        "WHERE o.workspace_id = ? AND o.generation_job_id = ?"
+    )
+    params: list[Any] = [workspace_id, generation_job_id]
+    if generation_attempt_id is not None:
+        query += " AND o.generation_attempt_id = ?"
+        params.append(generation_attempt_id)
+    query += " ORDER BY a.attempt_number, o.output_ordinal"
+    rows = connection.execute(query, params).fetchall()
+    return tuple(_generation_structured_output_from_row(row) for row in rows)
 
 
 _DIRECTION_COLUMNS = (

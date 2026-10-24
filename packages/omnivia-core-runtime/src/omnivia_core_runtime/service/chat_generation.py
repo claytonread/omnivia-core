@@ -68,7 +68,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
-from omnivia_core.chat_contract.v1 import to_canonical_json
+from omnivia_core.chat_contract.v1 import ChatContractDecodeError, to_canonical_json
 from omnivia_core.chat_contract.v1.generated import (
     F2A_FINISH_REASONS,
     F2A_PROVIDER_ERROR_CODES,
@@ -76,6 +76,12 @@ from omnivia_core.chat_contract.v1.generated import (
     RESNAPSHOT_REASONS,
 )
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
+from omnivia_core_runtime.service.chat_part_registry import (
+    DATA_TABLE_RESPONSE_SCHEMA_REF,
+    RICH_PROSE_PART_TYPE,
+    PartPayloadInvalid,
+    validate_registered_payload,
+)
 from omnivia_core_runtime.storage import chat
 
 __all__ = [
@@ -100,6 +106,7 @@ __all__ = [
     "UnsupportedProviderEvent",
     "append_provider_generation_event",
     "append_provider_reasoning_summary",
+    "append_provider_structured_output",
     "append_provider_text_delta",
     "apply_direction_continuation",
     "claim_fork_generation",
@@ -130,6 +137,11 @@ MAX_RESPONSE_TEXT_BYTES: Final = 262_144
 #: summaries is bounded independently of answer text. At four bytes per Unicode
 #: code point this also admits the contract's 65536-character single-event bound.
 MAX_REASONING_SUMMARY_BYTES: Final = 262_144
+
+#: A provider structured object is held to the same durable Message-part ceiling
+#: as generated text. Per-column and per-cell bounds are enforced independently by
+#: the registered `rich.prose` table shape below.
+MAX_STRUCTURED_OUTPUT_BYTES: Final = 262_144
 
 _QUEUED: Final = "chat.generation.queued"
 _STARTED: Final = "chat.generation.started"
@@ -1559,6 +1571,177 @@ def append_provider_reasoning_summary(
         generation_attempt_id=generation_attempt_id,
     )
     return appended[summary_ordinal]
+
+
+def append_provider_structured_output(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    generation_attempt_id: str,
+    provider_event: Mapping[str, Any],
+    output_ordinal: int,
+    now_us: int,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> chat.GenerationStructuredOutput:
+    """Persist one allow-listed structured response before the stream advances.
+
+    F2a deliberately treats `schemaRef` as opaque. Core does not: it accepts only
+    the one schema it can validate and materialise today, and stores its canonical
+    object in the append-only structured-output ledger. The provider event's
+    `output` is never copied into a generation-event payload.
+
+    A provider event id makes exact redelivery idempotent. Conflicting reuse,
+    malformed or oversized output, a second output for the Attempt, or an output
+    arriving outside a live started Attempt is refused without a partial write.
+    """
+    _, payload = _durable_event(provider_event)
+    if payload["providerEventType"] != "structured-output":
+        raise UnsupportedProviderEvent(
+            "provider event field 'eventType' is not 'structured-output'"
+        )
+    schema_ref = _wire_str(provider_event, "schemaRef")
+    if schema_ref != DATA_TABLE_RESPONSE_SCHEMA_REF:
+        raise UnsupportedProviderEvent(
+            "provider event field 'schemaRef' is not an allow-listed structured schema"
+        )
+    output = provider_event.get("output")
+    if not isinstance(output, Mapping):
+        raise UnsupportedProviderEvent("provider event field 'output' is not an object")
+    try:
+        output_document = to_canonical_json(dict(output)).encode("utf-8")
+    except ChatContractDecodeError:
+        raise UnsupportedProviderEvent(
+            "provider event field 'output' is not canonicalisable"
+        ) from None
+    if len(output_document) > MAX_STRUCTURED_OUTPUT_BYTES:
+        raise UnsupportedProviderEvent(
+            "provider event field 'output' exceeds the structured-output byte bound"
+        )
+
+    table_payload = {
+        "blocks": [{**dict(output), "kind": "table"}],
+    }
+    try:
+        validate_registered_payload(RICH_PROSE_PART_TYPE, table_payload)
+    except PartPayloadInvalid:
+        raise UnsupportedProviderEvent(
+            "provider event field 'output' does not match the data-table schema"
+        ) from None
+
+    if output_ordinal != 0:
+        raise GenerationSequenceGap(
+            "a data-table structured output must be the Attempt's sole output at ordinal zero"
+        )
+
+    job = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if job is None:
+        raise GenerationNotFound(f"generation job {generation_job_id!r} is not in this workspace")
+    events = chat.read_generation_events(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    all_outputs = chat.read_generation_structured_outputs(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    attempt_outputs = tuple(
+        item for item in all_outputs if item.generation_attempt_id == generation_attempt_id
+    )
+    provider_event_id = payload.get("providerEventId")
+    existing_output = None
+    if provider_event_id is not None:
+        existing_event = _existing_provider_event(
+            events,
+            generation_attempt_id=generation_attempt_id,
+            provider_event_id=str(provider_event_id),
+        )
+        existing_output = next(
+            (
+                item
+                for item in all_outputs
+                if item.provider_event_id == str(provider_event_id)
+            ),
+            None,
+        )
+        if existing_event is not None or (
+            existing_output is not None
+            and not (
+                existing_output.generation_attempt_id == generation_attempt_id
+                and existing_output.output_ordinal == output_ordinal
+                and existing_output.schema_ref == schema_ref
+                and dict(existing_output.output) == dict(output)
+            )
+        ):
+            raise DuplicateProviderEvent(
+                f"provider event {provider_event_id!r} is already durable carrying a different fact"
+            )
+
+    status = _require_status(connection, workspace_id=workspace_id, job=job)
+    if status.state in _TERMINAL_JOB_STATES:
+        raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
+    if status.state != "running" or status.current_attempt_id != generation_attempt_id:
+        raise GenerationConflict(f"generation job {generation_job_id!r} is not running this attempt")
+    if existing_output is not None:
+        return existing_output
+    if any(
+        event.generation_attempt_id == generation_attempt_id
+        and event.event_type in _TERMINAL_EVENT_TYPES
+        for event in events
+    ):
+        raise GenerationTerminal(f"generation attempt {generation_attempt_id!r} already ended")
+    if not any(
+        event.generation_attempt_id == generation_attempt_id and event.event_type == _STARTED
+        for event in events
+    ):
+        raise GenerationConflict(
+            f"generation attempt {generation_attempt_id!r} has no durable started event"
+        )
+    if attempt_outputs:
+        raise GenerationSequenceGap(
+            f"generation attempt {generation_attempt_id!r} already has its structured output"
+        )
+
+    expires_at_us = now_us + lease_duration_us
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_structured_output(
+            conversation_id=job.conversation_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=generation_attempt_id,
+            output_ordinal=output_ordinal,
+            provider_event_id=None if provider_event_id is None else str(provider_event_id),
+            schema_ref=schema_ref,
+            output=dict(output),
+            occurred_at_us=now_us,
+            schema_version=1,
+        )
+        writer.update_generation_job(
+            generation_job_id=generation_job_id,
+            expected_state=job.state,
+            expected_lease_epoch=job.lease_epoch,
+            state=job.state,
+            lease_epoch=job.lease_epoch,
+            current_attempt_id=job.current_attempt_id,
+            lease_owner=job.lease_owner,
+            lease_expires_at_us=expires_at_us,
+            heartbeat_at_us=now_us,
+            last_event_sequence=job.last_event_sequence,
+            updated_at_us=now_us,
+            started_at_us=job.started_at_us,
+        )
+        _restate_status(writer, status, updated_at_us=now_us)
+
+    appended = chat.read_generation_structured_outputs(
+        connection,
+        workspace_id=workspace_id,
+        generation_job_id=generation_job_id,
+        generation_attempt_id=generation_attempt_id,
+    )
+    return appended[0]
 
 
 # --- C6: a Direction taken in at an iteration boundary -------------------------------

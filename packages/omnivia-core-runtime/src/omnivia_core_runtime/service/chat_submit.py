@@ -116,6 +116,7 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
 from omnivia_core_runtime.service.chat_command import ChatAggregateConflict, ChatCommand
 from omnivia_core_runtime.service.chat_interactions import read_chat_wait
 from omnivia_core_runtime.service.chat_part_registry import (
+    RESPONSE_FORMAT_PART_TYPE,
     PartPayloadInvalid,
     validate_registered_payload,
 )
@@ -793,6 +794,11 @@ def _part(item: object, index: int) -> tuple[_Part, str]:
     visibility = item.get("visibility", "standard")
     if visibility not in _VISIBILITY:
         raise _invalid(f"{field}.visibility", "is not a governed message visibility")
+    if part_type == RESPONSE_FORMAT_PART_TYPE and visibility != "internal":
+        raise _invalid(
+            f"{field}.visibility",
+            "must be internal for a response-format directive",
+        )
     if "payload" not in item:
         raise _invalid(f"{field}.payload", "is required")
     payload, document = _canonical(item["payload"], f"{field}.payload")
@@ -817,6 +823,15 @@ def _part(item: object, index: int) -> tuple[_Part, str]:
         ),
         canonical,
     )
+
+
+def _validate_response_format_directives(parts: Sequence[_Part]) -> None:
+    """A submission names at most one internal response-format directive."""
+    if sum(part.part_type == RESPONSE_FORMAT_PART_TYPE for part in parts) > 1:
+        raise _invalid(
+            "editableParts",
+            "contains more than one response-format directive",
+        )
 
 
 def _digest(document: str) -> str:
@@ -1019,6 +1034,7 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
     ):
         raise _invalid("editableParts", "is not an array of one to 4096 parts")
     decoded = tuple(_part(item, index) for index, item in enumerate(parts))
+    _validate_response_format_directives(tuple(part for part, _ in decoded))
 
     command_id = _derivable_identifier(command, "commandId")
     message_id = (
@@ -1089,6 +1105,7 @@ def _decode_enqueue(command: Mapping[str, Any]) -> _EnqueueMessage:
     ):
         raise _invalid("editableParts", "is not an array of one to 4096 parts")
     decoded = tuple(_part(item, index) for index, item in enumerate(parts))
+    _validate_response_format_directives(tuple(part for part, _ in decoded))
 
     return _EnqueueMessage(
         command_id=_derivable_identifier(command, "commandId"),
@@ -1125,6 +1142,7 @@ def _decode_update_queue(command: Mapping[str, Any]) -> _UpdateQueuedSubmission:
     ):
         raise _invalid("editableParts", "is not an array of one to 4096 parts")
     decoded = tuple(_part(item, index) for index, item in enumerate(parts))
+    _validate_response_format_directives(tuple(part for part, _ in decoded))
 
     return _UpdateQueuedSubmission(
         command_id=_derivable_identifier(command, "commandId"),
@@ -1487,6 +1505,7 @@ def _decode_amendment(command: Mapping[str, Any]) -> _MessageAmendment:
     ):
         raise _invalid("editableParts", "is not an array of one to 4096 parts")
     decoded = tuple(_part(item, index) for index, item in enumerate(parts))
+    _validate_response_format_directives(tuple(part for part, _ in decoded))
     expected_hash = command.get("expectedSourceContentHash")
     if "expectedSourceContentHash" in command and not isinstance(expected_hash, str):
         raise _invalid("expectedSourceContentHash", "is not a content hash")

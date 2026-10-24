@@ -18,7 +18,12 @@ from typing import Any
 
 from omnivia_core.chat_contract.v1 import ChatContractDecodeError, to_canonical_json
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
-from omnivia_core_runtime.service.chat_part_registry import PRESENTATION_ONLY_PART_TYPES
+from omnivia_core_runtime.service.chat_part_registry import (
+    PRESENTATION_ONLY_PART_TYPES,
+    RICH_PROSE_PART_TYPE,
+    PartPayloadInvalid,
+    validate_registered_payload,
+)
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.connection import StorageError
 
@@ -102,6 +107,24 @@ def _message_text_parts(
         if part.visibility != "standard":
             continue
         if part.part_type in PRESENTATION_ONLY_PART_TYPES:
+            continue
+        if part.part_type == RICH_PROSE_PART_TYPE:
+            try:
+                validate_registered_payload(RICH_PROSE_PART_TYPE, part.payload)
+            except PartPayloadInvalid as error:
+                raise ChatCompactionConflict(
+                    "the selected chat lineage contains a malformed rich-prose table"
+                ) from error
+            block = part.payload["blocks"][0]
+            parts.append(
+                {
+                    "kind": "text",
+                    "text": "Data table:\n"
+                    + to_canonical_json(
+                        {"cols": block["cols"], "rows": block["rows"]}
+                    ),
+                }
+            )
             continue
         text = part.payload.get("text") if part.part_type == "text" else None
         if not isinstance(text, str):

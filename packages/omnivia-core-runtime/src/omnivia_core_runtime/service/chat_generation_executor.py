@@ -49,8 +49,10 @@ from omnivia_core_runtime.service.chat_generation import (
     GenerationNotFound,
     GenerationTerminal,
     StaleGenerationVersion,
+    UnsupportedProviderEvent,
     append_provider_generation_event,
     append_provider_reasoning_summary,
+    append_provider_structured_output,
     append_provider_text_delta,
     apply_direction_continuation,
     claim_fork_generation,
@@ -62,11 +64,14 @@ from omnivia_core_runtime.service.chat_generation import (
     stage_direction_continuation,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    DATA_TABLE_RESPONSE_SCHEMA_REF,
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
     PRESENTATION_ONLY_PART_TYPES,
     REASONING_SUMMARY_PART_TYPE,
+    RESPONSE_FORMAT_PART_TYPE,
+    RICH_PROSE_PART_TYPE,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
     PartPayloadInvalid,
@@ -215,6 +220,56 @@ class _ProviderContext:
     attachments: tuple[Mapping[str, str], ...] = ()
 
 
+def _data_table_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed data table.
+
+    The table remains a typed transcript part for rendering. F2a provider messages
+    have no table part, so later turns receive the exact validated columns and rows
+    as bounded canonical JSON rather than silently losing the prior answer.
+    """
+    try:
+        validate_registered_payload(RICH_PROSE_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed rich-prose table"
+        ) from error
+    block = payload["blocks"][0]
+    return "Data table:\n" + to_canonical_json(
+        {"cols": block["cols"], "rows": block["rows"]}
+    )
+
+
+def _trigger_response_format(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    trigger_message_id: str,
+) -> Mapping[str, Any]:
+    """Resolve the one internal response-format directive on a trigger Message."""
+    directives = tuple(
+        part
+        for part in chat.read_message_parts(
+            connection, workspace_id=workspace_id, message_id=trigger_message_id
+        )
+        if part.part_type == RESPONSE_FORMAT_PART_TYPE
+    )
+    if not directives:
+        return {"kind": "text"}
+    if len(directives) != 1 or directives[0].visibility != "internal":
+        raise GenerationExecutorError("the generation response-format directive is invalid")
+    directive = directives[0]
+    try:
+        validate_registered_payload(RESPONSE_FORMAT_PART_TYPE, directive.payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the generation response-format directive is invalid"
+        ) from error
+    return {
+        "kind": "structured",
+        "schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF,
+    }
+
+
 def _provider_context(
     connection: sqlite3.Connection,
     *,
@@ -288,6 +343,10 @@ def _provider_context(
                 # They are not provider prompt content and therefore have no entry
                 # in either the F2a message or its model-visible part references.
                 continue
+            elif part.part_type == RICH_PROSE_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _data_table_provider_text(part.payload)}
+                )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None
                 if not isinstance(text, str):
@@ -674,11 +733,25 @@ def guardrail_notice_part_payload() -> dict[str, Any]:
     }
 
 
+def structured_output_part_payload(
+    output: chat.GenerationStructuredOutput,
+) -> dict[str, Any]:
+    if output.schema_ref != DATA_TABLE_RESPONSE_SCHEMA_REF:
+        raise GenerationExecutorError("the structured output schema is unsupported")
+    payload = {"blocks": [{**dict(output.output), "kind": "table"}]}
+    try:
+        validate_registered_payload(RICH_PROSE_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError("the structured output is malformed") from error
+    return payload
+
+
 def _message_parts(
     text: str,
     tool_calls: tuple[chat.ChatToolCall, ...] = (),
     reasoning_summaries: tuple[chat.GenerationReasoningSummary, ...] = (),
     guardrail_notice: bool = False,
+    structured_outputs: tuple[chat.GenerationStructuredOutput, ...] = (),
 ) -> tuple[tuple[str, dict[str, Any]], ...]:
     """Ordered parts: provider summary, answer text, guardrail, then tools.
 
@@ -692,10 +765,14 @@ def _message_parts(
         parts.append(
             (REASONING_SUMMARY_PART_TYPE, reasoning_summary_part_payload(reasoning_summaries))
         )
-    if text or (not tool_calls and not guardrail_notice):
+    if text or (not tool_calls and not structured_outputs and not guardrail_notice):
         # A text-only commit keeps its text part whatever it holds, so no pre-C9
         # message changes meaning; only typed non-text content can omit it.
         parts.append(("text", {"text": text}))
+    parts.extend(
+        (RICH_PROSE_PART_TYPE, structured_output_part_payload(output))
+        for output in structured_outputs
+    )
     if guardrail_notice:
         parts.append((GUARDRAIL_NOTICE_PART_TYPE, guardrail_notice_part_payload()))
     parts.extend(_tool_call_message_part(call) for call in tool_calls)
@@ -707,6 +784,7 @@ def _message_hash(
     tool_calls: tuple[chat.ChatToolCall, ...] = (),
     reasoning_summaries: tuple[chat.GenerationReasoningSummary, ...] = (),
     guardrail_notice: bool = False,
+    structured_outputs: tuple[chat.GenerationStructuredOutput, ...] = (),
 ) -> tuple[str, tuple[str, ...]]:
     """The Message `content_hash` and one part hash per part, in part order.
 
@@ -722,7 +800,13 @@ def _message_hash(
     (attempt, step ordinal) for this reason, and the tool calls are durable
     before the commit, so a replay of the same generation hashes the same way.
     """
-    parts = _message_parts(text, tool_calls, reasoning_summaries, guardrail_notice)
+    parts = _message_parts(
+        text,
+        tool_calls,
+        reasoning_summaries,
+        guardrail_notice,
+        structured_outputs,
+    )
     documents = [_part_document(part_type, payload) for part_type, payload in parts]
     part_hashes = tuple(
         "sha256:" + hashlib.sha256(to_canonical_json(payload).encode("utf-8")).hexdigest()
@@ -997,6 +1081,13 @@ class ChatGenerationExecutor:
         if len(messages) > _MAX_REQUEST_MESSAGES:
             raise _DirectionRefusedError("rejected", "boundary_unavailable")
         connection_id, model_id = self._effective_route(job)
+        response_format = _trigger_response_format(
+            self.connection,
+            workspace_id=self.workspace_id,
+            trigger_message_id=trigger_message_id,
+        )
+        if hops and response_format.get("kind") == "structured":
+            raise _DirectionRefusedError("rejected", "boundary_unavailable")
         request = ProviderInvocationRequest(
             invocation_id=_stable_id("provider-inv", f"{job.generation_job_id}:{attempt_id}"),
             workspace_id=self.workspace_id,
@@ -1007,7 +1098,7 @@ class ChatGenerationExecutor:
             model_id=model_id,
             operation="language.stream",
             messages=messages,
-            response_format={"kind": "text"},
+            response_format=response_format,
             policy_ref=self.config.policy_ref,
             classification_ref=self.config.classification_ref,
             residency_ref=self.config.residency_ref,
@@ -1083,6 +1174,7 @@ class ChatGenerationExecutor:
             return None
 
         invocation_id = request.invocation_id
+        structured_response = request.response_format.get("kind") == "structured"
         try:
             chat.append_request_manifest_once(
                 self.connection,
@@ -1109,6 +1201,7 @@ class ChatGenerationExecutor:
         continued_as: str | None = None
         text_chunks: list[str] = []
         reasoning_summaries: list[str] = []
+        structured_outputs: list[chat.GenerationStructuredOutput] = []
         # C9: the step ordinal of the next tool call in THIS attempt. Per
         # attempt, not per job: `open_chat_turn` opens one turn per attempt, and
         # a step ordinal is a position within its own turn.
@@ -1163,6 +1256,10 @@ class ChatGenerationExecutor:
                 if event_type in _TERMINAL_PROVIDER_EVENTS:
                     self._deny_unsettled_provider_calls(job.generation_job_id, attempt_id)
                 if event_type == "text-delta":
+                    if structured_response:
+                        raise GenerationExecutorError(
+                            "a structured provider response emitted text"
+                        )
                     delta = event.get("delta")
                     if not isinstance(delta, str):
                         raise GenerationExecutorError("a provider text delta is malformed")
@@ -1224,6 +1321,36 @@ class ChatGenerationExecutor:
                         lease_duration_us=self._lease_duration_us(),
                     )
                     reasoning_summaries.append(summary)
+                elif event_type == "structured-output" and structured_response:
+                    # `structured-output` is also part of the existing open F2a
+                    # event vocabulary for ordinary text/tool streams. Those
+                    # events retain their pre-table behaviour and fall through
+                    # to the identity-only generation-event projection below.
+                    # Only an explicitly requested structured response enters
+                    # the governed data-table ledger.
+                    if structured_outputs:
+                        raise GenerationExecutorError(
+                            "a structured provider response emitted more than one output"
+                        )
+                    try:
+                        structured_outputs.append(
+                            append_provider_structured_output(
+                                self.connection,
+                                self.identity,
+                                workspace_id=self.workspace_id,
+                                fencing_generation=self.fencing_generation,
+                                generation_job_id=job.generation_job_id,
+                                generation_attempt_id=attempt_id,
+                                provider_event=event,
+                                output_ordinal=0,
+                                now_us=_now_us(self.clock),
+                                lease_duration_us=self._lease_duration_us(),
+                            )
+                        )
+                    except UnsupportedProviderEvent as error:
+                        raise GenerationExecutorError(
+                            "a provider structured output is malformed"
+                        ) from error
                 elif event_type == "tool-call":
                     # C9: the one non-text family with a durable home and a
                     # built consumer. Recorded BEFORE the stream goes on, so a
@@ -1258,14 +1385,31 @@ class ChatGenerationExecutor:
                         generation_job_id=job.generation_job_id,
                         generation_attempt_id=attempt_id,
                     )
+                    durable_outputs = chat.read_generation_structured_outputs(
+                        self.connection,
+                        workspace_id=self.workspace_id,
+                        generation_job_id=job.generation_job_id,
+                        generation_attempt_id=attempt_id,
+                    )
                     # A successful stream must have produced SOMETHING this attempt:
                     # text, a durable tool call, or the provider's exact closed
                     # content-filter finish. The latter itself produces the fixed
                     # guardrail part; every other empty success remains malformed.
-                    if not saw_start or not (
-                        durable_chunks
-                        or self._attempt_tool_calls(job.generation_job_id, attempt_id)
-                        or content_filtered
+                    has_required_response = (
+                        len(durable_outputs) == 1
+                        if structured_response and not content_filtered
+                        else bool(
+                            durable_chunks
+                            or self._attempt_tool_calls(job.generation_job_id, attempt_id)
+                            or content_filtered
+                        )
+                    )
+                    if (
+                        not saw_start
+                        or not has_required_response
+                        or (structured_response and durable_chunks)
+                        or (not structured_response and durable_outputs)
+                        or len(durable_outputs) > 1
                     ):
                         raise GenerationExecutorError("a successful provider stream is incomplete")
                     # The one earliest-safe boundary: a provider iteration that completed,
@@ -1275,7 +1419,7 @@ class ChatGenerationExecutor:
                     # A filtered boundary is final for this attempt: continuing it
                     # with a Direction would ask a second request to evade the exact
                     # provider decision the committed notice reports.
-                    if not content_filtered:
+                    if not content_filtered and not structured_response:
                         continued_as = self._continue_with_direction(
                             job=job,
                             attempt_id=attempt_id,
@@ -1286,6 +1430,7 @@ class ChatGenerationExecutor:
                     if continued_as is None:
                         result_message_id = self._materialize_assistant(
                             job=job,
+                            attempt_id=attempt_id,
                             text="".join(hop.prior_text for hop in hops)
                             + "".join(chunk.text_content for chunk in durable_chunks),
                             guardrail_notice=content_filtered,
@@ -2024,7 +2169,12 @@ class ChatGenerationExecutor:
                 raise GenerationExecutorError("a provider tool lifecycle ended without a result")
 
     def _materialize_assistant(
-        self, *, job: chat.GenerationJob, text: str, guardrail_notice: bool = False
+        self,
+        *,
+        job: chat.GenerationJob,
+        attempt_id: str,
+        text: str,
+        guardrail_notice: bool = False,
     ) -> str:
         message_id = _stable_id("assistant", job.generation_job_id)
         # C9: read BEFORE the hash, because the hash is over the whole part
@@ -2041,8 +2191,18 @@ class ChatGenerationExecutor:
             workspace_id=self.workspace_id,
             generation_job_id=job.generation_job_id,
         )
+        structured_outputs = chat.read_generation_structured_outputs(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_job_id=job.generation_job_id,
+            generation_attempt_id=attempt_id,
+        )
         message_hash, part_hashes = _message_hash(
-            text, tool_calls, reasoning_summaries, guardrail_notice
+            text,
+            tool_calls,
+            reasoning_summaries,
+            guardrail_notice,
+            structured_outputs,
         )
         existing = self.connection.execute(
             "SELECT content_hash FROM omnivia_chat_messages "
@@ -2114,7 +2274,13 @@ class ChatGenerationExecutor:
             # cannot reach a committed Message even by mistake.
             tool_calls_by_index = iter(tool_calls)
             for index, (part_type, payload) in enumerate(
-                _message_parts(text, tool_calls, reasoning_summaries, guardrail_notice)
+                _message_parts(
+                    text,
+                    tool_calls,
+                    reasoning_summaries,
+                    guardrail_notice,
+                    structured_outputs,
+                )
             ):
                 if part_type in {TOOL_CALL_PART_TYPE, WEB_SEARCH_PART_TYPE}:
                     validate_registered_payload(part_type, payload)
@@ -2125,6 +2291,9 @@ class ChatGenerationExecutor:
                 elif part_type == GUARDRAIL_NOTICE_PART_TYPE:
                     validate_registered_payload(part_type, payload)
                     part_id = _stable_id("assistant-guardrail-part", job.generation_job_id)
+                elif part_type == RICH_PROSE_PART_TYPE:
+                    validate_registered_payload(part_type, payload)
+                    part_id = _stable_id("assistant-table-part", job.generation_job_id)
                 else:
                     part_id = _stable_id("assistant-part", job.generation_job_id)
                 writer.append_message_part(

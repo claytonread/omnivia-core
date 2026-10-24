@@ -23,12 +23,15 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
     attachment_part_payload,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    DATA_TABLE_RESPONSE_SCHEMA_REF,
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
     PART_REGISTRY_VERSION,
     REASONING_SUMMARY_PART_TYPE,
     REGISTERED_PART_TYPES,
+    RESPONSE_FORMAT_PART_TYPE,
+    RICH_PROSE_PART_TYPE,
     TEXT_PART_TYPE,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
@@ -62,10 +65,14 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #               projected by `_materialize_assistant` without result claims
     #   guardrail.notice  one exact provider `content-filter` finish, projected
     #               with fixed Core-authored display-safe copy
+    #   response.format  explicit internal submit directive for one allow-listed schema
+    #   rich.prose  validated structured data-table output materialised by the executor
     assert REGISTERED_PART_TYPES == (
         ATTACHMENT_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
+        RESPONSE_FORMAT_PART_TYPE,
+        RICH_PROSE_PART_TYPE,
         TEXT_PART_TYPE,
         TOOL_CALL_PART_TYPE,
         WEB_SEARCH_PART_TYPE,
@@ -76,6 +83,8 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(REASONING_SUMMARY_PART_TYPE)
     assert is_registered_part_type(WEB_SEARCH_PART_TYPE)
     assert is_registered_part_type(GUARDRAIL_NOTICE_PART_TYPE)
+    assert is_registered_part_type(RESPONSE_FORMAT_PART_TYPE)
+    assert is_registered_part_type(RICH_PROSE_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -166,6 +175,56 @@ def test_guardrail_notice_is_an_exact_fixed_content_filter_fact() -> None:
     ):
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(GUARDRAIL_NOTICE_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
+    validate_registered_payload(
+        RESPONSE_FORMAT_PART_TYPE,
+        {"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF},
+    )
+    for bad, field in (
+        ({}, "schemaRef"),
+        ({"schemaRef": "arbitrary.schema"}, "schemaRef"),
+        ({"schemaRef": DATA_TABLE_RESPONSE_SCHEMA_REF, "schema": {}}, "schema"),
+    ):
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(RESPONSE_FORMAT_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_rich_prose_table_is_exact_bounded_and_rectangular() -> None:
+    valid = {
+        "blocks": [
+            {
+                "kind": "table",
+                "cols": ["Name", "Value"],
+                "rows": [["alpha", "1"], ["beta", "2"]],
+            }
+        ]
+    }
+    validate_registered_payload(RICH_PROSE_PART_TYPE, valid)
+    cases = (
+        ({}, "blocks"),
+        ({"blocks": []}, "blocks"),
+        ({"blocks": [{"kind": "paragraph", "cols": ["A"], "rows": []}]}, "blocks[0].kind"),
+        ({"blocks": [{"kind": "table", "cols": [], "rows": []}]}, "blocks[0].cols"),
+        (
+            {"blocks": [{"kind": "table", "cols": ["A", "B"], "rows": [["one"]]}]},
+            "blocks[0].rows[0]",
+        ),
+        (
+            {
+                "blocks": [
+                    {"kind": "table", "cols": ["A"], "rows": [["ok"]], "html": "<b>x</b>"}
+                ]
+            },
+            "blocks[0].html",
+        ),
+    )
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(RICH_PROSE_PART_TYPE, bad)
         assert refused.value.field == field
 
 
