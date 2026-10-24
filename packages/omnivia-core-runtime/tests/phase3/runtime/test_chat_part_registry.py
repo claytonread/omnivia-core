@@ -23,6 +23,9 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
     attachment_part_payload,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    GUARDRAIL_NOTICE_PART_TYPE,
+    GUARDRAIL_NOTICE_REASON,
+    GUARDRAIL_NOTICE_SAFE_MESSAGE,
     PART_REGISTRY_VERSION,
     REASONING_SUMMARY_PART_TYPE,
     REGISTERED_PART_TYPES,
@@ -57,8 +60,11 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #               `_materialize_assistant`, which emits one part per row
     #   web.search  one successful `codex.web_search` provider-reported row,
     #               projected by `_materialize_assistant` without result claims
+    #   guardrail.notice  one exact provider `content-filter` finish, projected
+    #               with fixed Core-authored display-safe copy
     assert REGISTERED_PART_TYPES == (
         ATTACHMENT_PART_TYPE,
+        GUARDRAIL_NOTICE_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
         TEXT_PART_TYPE,
         TOOL_CALL_PART_TYPE,
@@ -69,6 +75,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(TOOL_CALL_PART_TYPE)
     assert is_registered_part_type(REASONING_SUMMARY_PART_TYPE)
     assert is_registered_part_type(WEB_SEARCH_PART_TYPE)
+    assert is_registered_part_type(GUARDRAIL_NOTICE_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -133,6 +140,32 @@ def test_web_search_is_an_exact_completed_query_without_result_claims() -> None:
     ):
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(WEB_SEARCH_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_guardrail_notice_is_an_exact_fixed_content_filter_fact() -> None:
+    validate_registered_payload(
+        GUARDRAIL_NOTICE_PART_TYPE,
+        {
+            "reasonCode": GUARDRAIL_NOTICE_REASON,
+            "safeMessage": GUARDRAIL_NOTICE_SAFE_MESSAGE,
+        },
+    )
+    for bad, field in (
+        ({"safeMessage": GUARDRAIL_NOTICE_SAFE_MESSAGE}, "reasonCode"),
+        ({"reasonCode": "policy", "safeMessage": GUARDRAIL_NOTICE_SAFE_MESSAGE}, "reasonCode"),
+        ({"reasonCode": GUARDRAIL_NOTICE_REASON, "safeMessage": "Provider policy text"}, "safeMessage"),
+        (
+            {
+                "reasonCode": GUARDRAIL_NOTICE_REASON,
+                "safeMessage": GUARDRAIL_NOTICE_SAFE_MESSAGE,
+                "category": "provider-secret",
+            },
+            "category",
+        ),
+    ):
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(GUARDRAIL_NOTICE_PART_TYPE, bad)
         assert refused.value.field == field
 
 

@@ -62,6 +62,9 @@ from omnivia_core_runtime.service.chat_generation import (
     stage_direction_continuation,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    GUARDRAIL_NOTICE_PART_TYPE,
+    GUARDRAIL_NOTICE_REASON,
+    GUARDRAIL_NOTICE_SAFE_MESSAGE,
     PRESENTATION_ONLY_PART_TYPES,
     REASONING_SUMMARY_PART_TYPE,
     TOOL_CALL_PART_TYPE,
@@ -663,26 +666,38 @@ def reasoning_summary_part_payload(
     }
 
 
+def guardrail_notice_part_payload() -> dict[str, Any]:
+    """The one fixed transcript notice for a provider content-filter finish."""
+    return {
+        "reasonCode": GUARDRAIL_NOTICE_REASON,
+        "safeMessage": GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    }
+
+
 def _message_parts(
     text: str,
     tool_calls: tuple[chat.ChatToolCall, ...] = (),
     reasoning_summaries: tuple[chat.GenerationReasoningSummary, ...] = (),
+    guardrail_notice: bool = False,
 ) -> tuple[tuple[str, dict[str, Any]], ...]:
-    """Ordered parts: provider summary, answer text if any, then tool calls.
+    """Ordered parts: provider summary, answer text, guardrail, then tools.
 
-    No text WITH tool calls means no text part, never an empty one: a tool-call-only
-    response commits only its typed parts rather than inventing empty prose. Hash, part
-    index and the rows written all come from this one list.
+    No text with typed non-text content means no text part, never an empty one: a
+    tool-call-only or fully filtered response commits only its typed parts rather than
+    inventing empty prose. Hash, part index and the rows written all come from this one
+    list.
     """
     parts: list[tuple[str, dict[str, Any]]] = []
     if reasoning_summaries:
         parts.append(
             (REASONING_SUMMARY_PART_TYPE, reasoning_summary_part_payload(reasoning_summaries))
         )
-    if text or not tool_calls:
-        # A text-only commit keeps its text part whatever it holds, so no
-        # pre-C9 message changes meaning; only a tool-call response omits it.
+    if text or (not tool_calls and not guardrail_notice):
+        # A text-only commit keeps its text part whatever it holds, so no pre-C9
+        # message changes meaning; only typed non-text content can omit it.
         parts.append(("text", {"text": text}))
+    if guardrail_notice:
+        parts.append((GUARDRAIL_NOTICE_PART_TYPE, guardrail_notice_part_payload()))
     parts.extend(_tool_call_message_part(call) for call in tool_calls)
     return tuple(parts)
 
@@ -691,6 +706,7 @@ def _message_hash(
     text: str,
     tool_calls: tuple[chat.ChatToolCall, ...] = (),
     reasoning_summaries: tuple[chat.GenerationReasoningSummary, ...] = (),
+    guardrail_notice: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
     """The Message `content_hash` and one part hash per part, in part order.
 
@@ -706,7 +722,7 @@ def _message_hash(
     (attempt, step ordinal) for this reason, and the tool calls are durable
     before the commit, so a replay of the same generation hashes the same way.
     """
-    parts = _message_parts(text, tool_calls, reasoning_summaries)
+    parts = _message_parts(text, tool_calls, reasoning_summaries, guardrail_notice)
     documents = [_part_document(part_type, payload) for part_type, payload in parts]
     part_hashes = tuple(
         "sha256:" + hashlib.sha256(to_canonical_json(payload).encode("utf-8")).hexdigest()
@@ -1235,6 +1251,7 @@ class ChatGenerationExecutor:
                     "error",
                     "cancelled",
                 }:
+                    content_filtered = event.get("finishReason") == GUARDRAIL_NOTICE_REASON
                     durable_chunks = chat.read_generation_text_chunks(
                         self.connection,
                         workspace_id=self.workspace_id,
@@ -1242,28 +1259,36 @@ class ChatGenerationExecutor:
                         generation_attempt_id=attempt_id,
                     )
                     # A successful stream must have produced SOMETHING this attempt:
-                    # text, or a durable tool call. Tool calls alone are a
-                    # complete response (`finish(tool-calls)`); neither is not.
+                    # text, a durable tool call, or the provider's exact closed
+                    # content-filter finish. The latter itself produces the fixed
+                    # guardrail part; every other empty success remains malformed.
                     if not saw_start or not (
-                        durable_chunks or self._attempt_tool_calls(job.generation_job_id, attempt_id)
+                        durable_chunks
+                        or self._attempt_tool_calls(job.generation_job_id, attempt_id)
+                        or content_filtered
                     ):
                         raise GenerationExecutorError("a successful provider stream is incomplete")
                     # The one earliest-safe boundary: a provider iteration that completed,
                     # never a delta inside one. A Direction pending here is taken in and
                     # this Generation goes on as its successor attempt; otherwise the
                     # Generation settles, as it always did.
-                    continued_as = self._continue_with_direction(
-                        job=job,
-                        attempt_id=attempt_id,
-                        hops=hops,
-                        finish_event=event,
-                        durable_chunks=durable_chunks,
-                    )
+                    # A filtered boundary is final for this attempt: continuing it
+                    # with a Direction would ask a second request to evade the exact
+                    # provider decision the committed notice reports.
+                    if not content_filtered:
+                        continued_as = self._continue_with_direction(
+                            job=job,
+                            attempt_id=attempt_id,
+                            hops=hops,
+                            finish_event=event,
+                            durable_chunks=durable_chunks,
+                        )
                     if continued_as is None:
                         result_message_id = self._materialize_assistant(
                             job=job,
                             text="".join(hop.prior_text for hop in hops)
                             + "".join(chunk.text_content for chunk in durable_chunks),
+                            guardrail_notice=content_filtered,
                         )
                         append_provider_generation_event(
                             self.connection,
@@ -1998,7 +2023,9 @@ class ChatGenerationExecutor:
             elif call.state not in {"succeeded", "failed", "denied", "cancelled"}:
                 raise GenerationExecutorError("a provider tool lifecycle ended without a result")
 
-    def _materialize_assistant(self, *, job: chat.GenerationJob, text: str) -> str:
+    def _materialize_assistant(
+        self, *, job: chat.GenerationJob, text: str, guardrail_notice: bool = False
+    ) -> str:
         message_id = _stable_id("assistant", job.generation_job_id)
         # C9: read BEFORE the hash, because the hash is over the whole part
         # list. Read by job, not attempt: `text` above is assembled across
@@ -2014,7 +2041,9 @@ class ChatGenerationExecutor:
             workspace_id=self.workspace_id,
             generation_job_id=job.generation_job_id,
         )
-        message_hash, part_hashes = _message_hash(text, tool_calls, reasoning_summaries)
+        message_hash, part_hashes = _message_hash(
+            text, tool_calls, reasoning_summaries, guardrail_notice
+        )
         existing = self.connection.execute(
             "SELECT content_hash FROM omnivia_chat_messages "
             "WHERE workspace_id = ? AND message_id = ?",
@@ -2078,14 +2107,14 @@ class ChatGenerationExecutor:
                 committed_at_us=now_us,
             )
             # One loop over the ordered part list the hash was computed from.
-            # An explicit reasoning summary (if any) precedes answer text; each
-            # tool-derived part follows in the ledger's order. Every typed payload is
-            # validated against the registry before it is written, so a shape
-            # a family does not state -- the tool's arguments above all --
+            # An explicit reasoning summary (if any) precedes answer text, the
+            # Core-authored guardrail notice, and tool parts in ledger order. Every
+            # typed payload is validated against the registry before it is written,
+            # so a shape a family does not state -- the tool's arguments above all --
             # cannot reach a committed Message even by mistake.
             tool_calls_by_index = iter(tool_calls)
             for index, (part_type, payload) in enumerate(
-                _message_parts(text, tool_calls, reasoning_summaries)
+                _message_parts(text, tool_calls, reasoning_summaries, guardrail_notice)
             ):
                 if part_type in {TOOL_CALL_PART_TYPE, WEB_SEARCH_PART_TYPE}:
                     validate_registered_payload(part_type, payload)
@@ -2093,6 +2122,9 @@ class ChatGenerationExecutor:
                 elif part_type == REASONING_SUMMARY_PART_TYPE:
                     validate_registered_payload(part_type, payload)
                     part_id = _stable_id("assistant-reasoning-part", job.generation_job_id)
+                elif part_type == GUARDRAIL_NOTICE_PART_TYPE:
+                    validate_registered_payload(part_type, payload)
+                    part_id = _stable_id("assistant-guardrail-part", job.generation_job_id)
                 else:
                     part_id = _stable_id("assistant-part", job.generation_job_id)
                 writer.append_message_part(

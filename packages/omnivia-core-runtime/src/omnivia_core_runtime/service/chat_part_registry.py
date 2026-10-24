@@ -27,6 +27,8 @@ produces it. The families below are written by Core today:
   provider-reported or governed tool ledger.
 * `web.search` -- `service/chat_generation_executor.py`, from a completed,
   provider-reported `codex.web_search` lifecycle carrying only its query.
+* `guardrail.notice` -- `service/chat_generation_executor.py`, from only the
+  provider's closed `content-filter` finish reason and fixed Core-authored copy.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -54,6 +56,9 @@ from typing import Any, Final
 from omnivia_core_runtime.service.chat_attachment_authority import ATTACHMENT_PART_TYPE
 
 __all__ = [
+    "GUARDRAIL_NOTICE_PART_TYPE",
+    "GUARDRAIL_NOTICE_REASON",
+    "GUARDRAIL_NOTICE_SAFE_MESSAGE",
     "PART_REGISTRY_VERSION",
     "PRESENTATION_ONLY_PART_TYPES",
     "REASONING_SUMMARY_PART_TYPE",
@@ -93,6 +98,13 @@ REASONING_SUMMARY_PART_TYPE: Final = "reasoning.summary"
 #: URLs or snippets, so this family deliberately carries neither.
 WEB_SEARCH_PART_TYPE: Final = "web.search"
 
+#: One exact provider content-filter terminal fact. The notice carries fixed,
+#: Core-authored display copy only: no provider policy prose, rejected content,
+#: category labels or hidden moderation metadata cross the transcript boundary.
+GUARDRAIL_NOTICE_PART_TYPE: Final = "guardrail.notice"
+GUARDRAIL_NOTICE_REASON: Final = "content-filter"
+GUARDRAIL_NOTICE_SAFE_MESSAGE: Final = "The provider filtered some or all of this response."
+
 #: Exact Core-authored families that are transcript presentation, not F2a
 #: provider prompt content. Keeping this taxonomy beside the part registry gives
 #: both the ordinary and compacted context builders the same closed decision.
@@ -102,6 +114,7 @@ PRESENTATION_ONLY_PART_TYPES: Final = frozenset(
         REASONING_SUMMARY_PART_TYPE,
         TOOL_CALL_PART_TYPE,
         WEB_SEARCH_PART_TYPE,
+        GUARDRAIL_NOTICE_PART_TYPE,
     }
 )
 
@@ -263,6 +276,21 @@ def _validate_web_search(payload: Mapping[str, Any]) -> None:
         raise PartPayloadInvalid("state", "must be complete")
 
 
+def _validate_guardrail_notice(payload: Mapping[str, Any]) -> None:
+    """The fixed display-safe notice emitted for an exact filtered finish."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"reasonCode", "safeMessage"}),
+        optional=frozenset(),
+    )
+    _require_text(payload, "reasonCode", maximum=32)
+    _require_text(payload, "safeMessage", maximum=256)
+    if payload["reasonCode"] != GUARDRAIL_NOTICE_REASON:
+        raise PartPayloadInvalid("reasonCode", "must identify the content-filter finish")
+    if payload["safeMessage"] != GUARDRAIL_NOTICE_SAFE_MESSAGE:
+        raise PartPayloadInvalid("safeMessage", "must be the fixed display-safe message")
+
+
 #: Every registered family, and the validator for its payload. Closed over the
 #: families Core produces -- see the module docstring on producer-first.
 _VALIDATORS: Final[Mapping[str, Any]] = {
@@ -271,6 +299,7 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     REASONING_SUMMARY_PART_TYPE: _validate_reasoning_summary,
     TOOL_CALL_PART_TYPE: _validate_tool_call,
     WEB_SEARCH_PART_TYPE: _validate_web_search,
+    GUARDRAIL_NOTICE_PART_TYPE: _validate_guardrail_notice,
 }
 
 #: The registered family names, for a caller that wants to report the registry

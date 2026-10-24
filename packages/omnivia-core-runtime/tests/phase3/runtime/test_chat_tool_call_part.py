@@ -47,6 +47,9 @@ from omnivia_core_runtime.service.chat_generation_executor import (
     web_search_part_payload,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    GUARDRAIL_NOTICE_PART_TYPE,
+    GUARDRAIL_NOTICE_REASON,
+    GUARDRAIL_NOTICE_SAFE_MESSAGE,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
     PartPayloadInvalid,
@@ -820,6 +823,73 @@ def test_a_successful_stream_with_no_text_and_no_tool_call_still_fails(seeded: m
     assert status(seeded).state == "failed"
     assert assistant_messages(seeded) == []
     assert count(seeded, "omnivia_chat_tool_calls") == 0
+
+
+def test_a_partial_content_filter_response_commits_text_then_one_fixed_notice(
+    seeded: m1.Owned,
+) -> None:
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        yield wire(
+            request,
+            1,
+            "text-delta",
+            delta="The safe part of the answer.",
+            partId="part-1",
+            stepId="step-1",
+        )
+        yield wire(request, 2, "finish", finishReason=GUARDRAIL_NOTICE_REASON)
+
+    run(seeded, Scripted(script))
+
+    assert status(seeded).state == "succeeded"
+    committed = parts(seeded)
+    assert [part.part_type for part in committed] == ["text", GUARDRAIL_NOTICE_PART_TYPE]
+    assert committed[0].payload == {"text": "The safe part of the answer."}
+    assert committed[1].payload == {
+        "reasonCode": GUARDRAIL_NOTICE_REASON,
+        "safeMessage": GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    }
+    validate_registered_payload(GUARDRAIL_NOTICE_PART_TYPE, committed[1].payload)
+    serialized = json.dumps(dict(committed[1].payload))
+    assert "category" not in serialized
+    assert "policy" not in serialized.lower()
+    context = provider_context_through_assistant(seeded)
+    assert context.messages[-1] == {
+        "role": "assistant",
+        "parts": [{"kind": "text", "text": "The safe part of the answer."}],
+    }
+    assert [part["partType"] for part in context.manifest_message_refs[-1]["parts"]] == [
+        "text"
+    ]
+
+
+def test_a_fully_filtered_response_commits_the_notice_without_inventing_empty_text(
+    seeded: m1.Owned,
+) -> None:
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        yield wire(request, 1, "finish", finishReason=GUARDRAIL_NOTICE_REASON)
+
+    run(seeded, Scripted(script))
+
+    assert status(seeded).state == "succeeded"
+    committed = parts(seeded)
+    assert [part.part_type for part in committed] == [GUARDRAIL_NOTICE_PART_TYPE]
+    assert committed[0].payload == {
+        "reasonCode": GUARDRAIL_NOTICE_REASON,
+        "safeMessage": GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    }
+    guardrail_hash = _message_hash("", guardrail_notice=True)[0]
+    assert guardrail_hash == assistant_messages(seeded)[0].content_hash
+    assert guardrail_hash != _message_hash("")[0]
+    context = provider_context_through_assistant(seeded)
+    assert context.messages[-1]["role"] == "user"
+    assert all(
+        part["partType"] != GUARDRAIL_NOTICE_PART_TYPE
+        for reference in context.manifest_message_refs
+        for part in reference["parts"]
+    )
 
 
 def test_a_tool_call_only_message_hash_is_over_the_typed_parts_alone() -> None:
