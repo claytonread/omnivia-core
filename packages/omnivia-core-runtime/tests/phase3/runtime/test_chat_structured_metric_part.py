@@ -154,6 +154,23 @@ def test_structured_request_is_durable_and_materialises_one_metric(
     assert dict(parts[0].payload) == METRIC
 
 
+def test_nullable_provider_unit_is_canonicalised_to_the_optional_unit_contract(
+    seeded: m1.Owned,
+) -> None:
+    provider_metric = {"label": "Health score", "value": 99, "unit": None}
+    canonical_metric = {"label": "Health score", "value": 99}
+
+    run(seeded, Scripted(metric_stream(provider_metric)))
+
+    assert status(seeded).state == "succeeded"
+    outputs = _outputs(seeded)
+    assert len(outputs) == 1
+    assert dict(outputs[0].output) == canonical_metric
+    parts = _parts(seeded)
+    assert [part.part_type for part in parts] == [METRIC_NUMBER_PART_TYPE]
+    assert dict(parts[0].payload) == canonical_metric
+
+
 def test_crash_replay_reuses_the_same_metric_output_row(seeded: m1.Owned) -> None:
     def dies(*args: Any, **kwargs: Any) -> Any:
         raise Crash

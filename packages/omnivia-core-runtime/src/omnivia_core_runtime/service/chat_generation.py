@@ -1615,8 +1615,20 @@ def append_provider_structured_output(
     output = provider_event.get("output")
     if not isinstance(output, Mapping):
         raise UnsupportedProviderEvent("provider event field 'output' is not an object")
+    normalized_output = dict(output)
+    # Strict provider schemas require every declared property to be present. The
+    # public metric contract still makes ``unit`` optional, so Platform represents
+    # absence as JSON null at that provider-only edge. Remove exactly that sentinel
+    # before canonicalisation, validation and persistence; a null anywhere else
+    # remains ordinary input and is refused by the registered payload validator.
+    if (
+        schema_ref == NUMBER_TICKER_RESPONSE_SCHEMA_REF
+        and "unit" in normalized_output
+        and normalized_output["unit"] is None
+    ):
+        del normalized_output["unit"]
     try:
-        output_document = to_canonical_json(dict(output)).encode("utf-8")
+        output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
         raise UnsupportedProviderEvent(
             "provider event field 'output' is not canonicalisable"
@@ -1628,11 +1640,11 @@ def append_provider_structured_output(
 
     if schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
         part_type = RICH_PROSE_PART_TYPE
-        part_payload = {"blocks": [{**dict(output), "kind": "table"}]}
+        part_payload = {"blocks": [{**normalized_output, "kind": "table"}]}
         schema_label = "data-table"
     else:
         part_type = METRIC_NUMBER_PART_TYPE
-        part_payload = dict(output)
+        part_payload = normalized_output
         schema_label = "number-ticker"
     try:
         validate_registered_payload(part_type, part_payload)
@@ -1682,7 +1694,7 @@ def append_provider_structured_output(
                 existing_output.generation_attempt_id == generation_attempt_id
                 and existing_output.output_ordinal == output_ordinal
                 and existing_output.schema_ref == schema_ref
-                and dict(existing_output.output) == dict(output)
+                and dict(existing_output.output) == normalized_output
             )
         ):
             raise DuplicateProviderEvent(
@@ -1725,7 +1737,7 @@ def append_provider_structured_output(
             output_ordinal=output_ordinal,
             provider_event_id=None if provider_event_id is None else str(provider_event_id),
             schema_ref=schema_ref,
-            output=dict(output),
+            output=normalized_output,
             occurred_at_us=now_us,
             schema_version=1,
         )
