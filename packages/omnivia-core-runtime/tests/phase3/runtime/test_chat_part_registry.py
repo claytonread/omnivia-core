@@ -28,6 +28,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     REGISTERED_PART_TYPES,
     TEXT_PART_TYPE,
     TOOL_CALL_PART_TYPE,
+    WEB_SEARCH_PART_TYPE,
     PartPayloadInvalid,
     is_registered_part_type,
     validate_registered_payload,
@@ -54,16 +55,20 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   tool.call   `chat_generation_executor._record_tool_proposal` (C9), which
     #               records a provider `tool-call` event into C8's ledger, and
     #               `_materialize_assistant`, which emits one part per row
+    #   web.search  one successful `codex.web_search` provider-reported row,
+    #               projected by `_materialize_assistant` without result claims
     assert REGISTERED_PART_TYPES == (
         ATTACHMENT_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
         TEXT_PART_TYPE,
         TOOL_CALL_PART_TYPE,
+        WEB_SEARCH_PART_TYPE,
     )
     assert is_registered_part_type(TEXT_PART_TYPE)
     assert is_registered_part_type(ATTACHMENT_PART_TYPE)
     assert is_registered_part_type(TOOL_CALL_PART_TYPE)
     assert is_registered_part_type(REASONING_SUMMARY_PART_TYPE)
+    assert is_registered_part_type(WEB_SEARCH_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -108,6 +113,26 @@ def test_reasoning_summary_is_an_exact_display_safe_shape() -> None:
     ):
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(REASONING_SUMMARY_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_web_search_is_an_exact_completed_query_without_result_claims() -> None:
+    validate_registered_payload(
+        WEB_SEARCH_PART_TYPE,
+        {"query": "site:openai.com official homepage", "state": "complete"},
+    )
+    for bad, field in (
+        ({"state": "complete"}, "query"),
+        ({"query": "", "state": "complete"}, "query"),
+        ({"query": " leading", "state": "complete"}, "query"),
+        ({"query": "line\nbreak", "state": "complete"}, "query"),
+        ({"query": "x" * 4_097, "state": "complete"}, "query"),
+        ({"query": "safe", "state": "searching"}, "state"),
+        ({"query": "safe", "state": "complete", "results": []}, "results"),
+        ({"query": "safe", "state": "complete", "url": "https://example.invalid"}, "url"),
+    ):
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(WEB_SEARCH_PART_TYPE, bad)
         assert refused.value.field == field
 
 

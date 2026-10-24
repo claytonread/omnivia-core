@@ -64,6 +64,8 @@ from omnivia_core_runtime.service.chat_generation import (
 from omnivia_core_runtime.service.chat_part_registry import (
     REASONING_SUMMARY_PART_TYPE,
     TOOL_CALL_PART_TYPE,
+    WEB_SEARCH_PART_TYPE,
+    PartPayloadInvalid,
     validate_registered_payload,
 )
 from omnivia_core_runtime.service.chat_tool_lifecycle import (
@@ -575,6 +577,7 @@ def _existing_manifest_timestamps(
 #: Why a provider-proposed tool call without a result is denied at the terminal boundary.
 NO_EXECUTION_PATH: Final = "no_governed_execution_path"
 MAX_PROVIDER_TOOL_RESULT_BYTES: Final = 64 * 1024
+PROVIDER_WEB_SEARCH_TOOL_NAME: Final = "codex.web_search"
 
 
 def tool_call_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
@@ -602,6 +605,42 @@ def tool_call_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
                 "Proposed by the model. Not run by OmniVia: no governed tool execution path was available."
             )
     return payload
+
+
+def web_search_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
+    """Publish only the query of one exact, completed provider search.
+
+    The provider tool result contains no result documents, URLs or snippets,
+    so none are inferred from assistant prose. The query is the sole public
+    display fact and remains bounded by the registered part validator.
+    """
+    arguments = call.proposed_arguments
+    if (
+        call.registry_ref != PROVIDER_REPORTED_REGISTRY_REF
+        or call.tool_version != PROVIDER_REPORTED_TOOL_VERSION
+        or call.tool_name != PROVIDER_WEB_SEARCH_TOOL_NAME
+        or call.state != "succeeded"
+        or not isinstance(arguments, Mapping)
+        or set(arguments) != {"query"}
+    ):
+        raise GenerationExecutorError("a provider web search is malformed")
+    payload: dict[str, Any] = {"query": arguments.get("query"), "state": "complete"}
+    try:
+        validate_registered_payload(WEB_SEARCH_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError("a provider web search is malformed") from error
+    return payload
+
+
+def _tool_call_message_part(call: chat.ChatToolCall) -> tuple[str, dict[str, Any]]:
+    if (
+        call.registry_ref == PROVIDER_REPORTED_REGISTRY_REF
+        and getattr(call, "tool_version", None) == PROVIDER_REPORTED_TOOL_VERSION
+        and call.tool_name == PROVIDER_WEB_SEARCH_TOOL_NAME
+        and call.state == "succeeded"
+    ):
+        return WEB_SEARCH_PART_TYPE, web_search_part_payload(call)
+    return TOOL_CALL_PART_TYPE, tool_call_part_payload(call)
 
 
 def _part_document(part_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -638,7 +677,7 @@ def _message_parts(
         # A text-only commit keeps its text part whatever it holds, so no
         # pre-C9 message changes meaning; only a tool-call response omits it.
         parts.append(("text", {"text": text}))
-    parts.extend((TOOL_CALL_PART_TYPE, tool_call_part_payload(call)) for call in tool_calls)
+    parts.extend(_tool_call_message_part(call) for call in tool_calls)
     return tuple(parts)
 
 
@@ -2034,7 +2073,7 @@ class ChatGenerationExecutor:
             )
             # One loop over the ordered part list the hash was computed from.
             # An explicit reasoning summary (if any) precedes answer text; each
-            # `tool.call` part follows in the ledger's order. Every typed payload is
+            # tool-derived part follows in the ledger's order. Every typed payload is
             # validated against the registry before it is written, so a shape
             # a family does not state -- the tool's arguments above all --
             # cannot reach a committed Message even by mistake.
@@ -2042,7 +2081,7 @@ class ChatGenerationExecutor:
             for index, (part_type, payload) in enumerate(
                 _message_parts(text, tool_calls, reasoning_summaries)
             ):
-                if part_type == TOOL_CALL_PART_TYPE:
+                if part_type in {TOOL_CALL_PART_TYPE, WEB_SEARCH_PART_TYPE}:
                     validate_registered_payload(part_type, payload)
                     part_id = _stable_id("assistant-tool-part", next(tool_calls_by_index).tool_call_id)
                 elif part_type == REASONING_SUMMARY_PART_TYPE:

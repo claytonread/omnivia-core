@@ -40,11 +40,15 @@ from omnivia_core_runtime.service.chat_generation_executor import (
     NO_EXECUTION_PATH,
     PROVIDER_REPORTED_REGISTRY_REF,
     PROVIDER_REPORTED_TOOL_VERSION,
+    PROVIDER_WEB_SEARCH_TOOL_NAME,
+    GenerationExecutorError,
     _message_hash,
     tool_call_part_payload,
+    web_search_part_payload,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
     TOOL_CALL_PART_TYPE,
+    WEB_SEARCH_PART_TYPE,
     PartPayloadInvalid,
     is_registered_part_type,
     validate_registered_payload,
@@ -282,6 +286,105 @@ def test_the_committed_message_carries_one_tool_call_part_after_its_text(
     assert payload["id"] == ledger(seeded)[0].tool_call_id
     assert payload["state"] == "denied"
     assert "Not run" in payload["detail"]
+
+
+def test_completed_provider_web_search_commits_one_dedicated_part_without_invented_results(
+    seeded: m1.Owned,
+) -> None:
+    query = "site:openai.com official homepage"
+
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        yield wire(
+            request,
+            1,
+            "tool-call",
+            toolCallId="search-1",
+            stepId="step-1",
+            toolName=PROVIDER_WEB_SEARCH_TOOL_NAME,
+            input={"query": query},
+        )
+        yield wire(
+            request,
+            2,
+            "tool-result",
+            toolCallId="search-1",
+            stepId="step-1",
+            output={},
+        )
+        yield wire(request, 3, "text-delta", delta="Found it.", partId="part-1", stepId="step-2")
+        yield wire(request, 4, "finish", finishReason="stop")
+
+    run(seeded, Scripted(script))
+
+    assert status(seeded).state == "succeeded", status(seeded)
+    committed = parts(seeded)
+    assert [part.part_type for part in committed] == ["text", WEB_SEARCH_PART_TYPE]
+    assert dict(committed[1].payload) == {"query": query, "state": "complete"}
+    assert is_registered_part_type(WEB_SEARCH_PART_TYPE)
+    validate_registered_payload(WEB_SEARCH_PART_TYPE, committed[1].payload)
+    assert dict(ledger(seeded)[0].proposed_arguments) == {"query": query}
+    serialized = json.dumps([dict(part.payload) for part in committed])
+    assert "results" not in serialized
+    assert "http" not in serialized
+    assert TOOL_CALL_PART_TYPE not in [part.part_type for part in committed]
+
+
+def test_provider_web_search_payload_refuses_unbounded_or_extended_arguments(
+    seeded: m1.Owned,
+) -> None:
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        yield wire(
+            request,
+            1,
+            "tool-call",
+            toolCallId="search-1",
+            stepId="step-1",
+            toolName=PROVIDER_WEB_SEARCH_TOOL_NAME,
+            input={"query": "safe query", "results": [{"url": "https://untrusted.invalid"}]},
+        )
+        yield wire(
+            request,
+            2,
+            "tool-result",
+            toolCallId="search-1",
+            stepId="step-1",
+            output={},
+        )
+        yield wire(request, 3, "finish", finishReason="tool-calls")
+
+    run(seeded, Scripted(script))
+
+    assert status(seeded).state == "failed"
+    assert assistant_messages(seeded) == []
+    assert count(seeded, "omnivia_chat_tool_calls") == 1
+
+
+def test_web_search_part_payload_requires_the_exact_completed_provider_lifecycle() -> None:
+    class Row:
+        registry_ref = PROVIDER_REPORTED_REGISTRY_REF
+        tool_version = PROVIDER_REPORTED_TOOL_VERSION
+        tool_name = PROVIDER_WEB_SEARCH_TOOL_NAME
+        state = "succeeded"
+
+        def __init__(self) -> None:
+            self.proposed_arguments = {"query": "bounded query"}
+
+    assert web_search_part_payload(Row()) == {"query": "bounded query", "state": "complete"}  # type: ignore[arg-type]
+    for patch in (
+        {"state": "failed"},
+        {"tool_name": "search"},
+        {"registry_ref": "other"},
+        {"proposed_arguments": {}},
+        {"proposed_arguments": {"query": " bounded query"}},
+        {"proposed_arguments": {"query": "x" * 4_097}},
+    ):
+        candidate = Row()
+        for key, value in patch.items():
+            setattr(candidate, key, value)
+        with pytest.raises(GenerationExecutorError, match="provider web search"):
+            web_search_part_payload(candidate)  # type: ignore[arg-type]
 
 
 def test_the_commit_validates_the_payload_rather_than_trusting_the_builder(

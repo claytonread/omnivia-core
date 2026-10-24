@@ -23,6 +23,10 @@ produces it. The families below are written by Core today:
   `service/chat_attachment_authority.attachment_part_payload`.
 * `reasoning.summary` -- `service/chat_generation_executor.py`, from only an
   explicit provider `reasoning-summary` event; never from raw reasoning content.
+* `tool.call` -- `service/chat_generation_executor.py`, from the durable
+  provider-reported or governed tool ledger.
+* `web.search` -- `service/chat_generation_executor.py`, from a completed,
+  provider-reported `codex.web_search` lifecycle carrying only its query.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -55,6 +59,7 @@ __all__ = [
     "REGISTERED_PART_TYPES",
     "TEXT_PART_TYPE",
     "TOOL_CALL_PART_TYPE",
+    "WEB_SEARCH_PART_TYPE",
     "PartPayloadInvalid",
     "is_registered_part_type",
     "validate_registered_payload",
@@ -81,6 +86,11 @@ TOOL_CALL_PART_TYPE: Final = "tool.call"
 #: One provider-issued display-safe reasoning summary. This is deliberately
 #: distinct from protected reasoning content, which never crosses F2a.
 REASONING_SUMMARY_PART_TYPE: Final = "reasoning.summary"
+
+#: One completed search that the connected provider reported executing. The
+#: public Codex protocol currently exposes the query but no trustworthy result
+#: URLs or snippets, so this family deliberately carries neither.
+WEB_SEARCH_PART_TYPE: Final = "web.search"
 
 class PartPayloadInvalid(Exception):
     """A payload that does not match the registered shape of its own family.
@@ -225,6 +235,21 @@ def _validate_reasoning_summary(payload: Mapping[str, Any]) -> None:
         raise PartPayloadInvalid("detail", "must be non-empty and NUL-free")
 
 
+def _validate_web_search(payload: Mapping[str, Any]) -> None:
+    """The exact completed-search display fact produced from the tool ledger."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"query", "state"}),
+        optional=frozenset(),
+    )
+    _require_text(payload, "query", maximum=4_096)
+    query = payload["query"]
+    if query == "" or query.strip() != query or any(ord(character) < 32 or ord(character) == 127 for character in query):
+        raise PartPayloadInvalid("query", "must be non-empty, trimmed and control-free")
+    if payload["state"] != "complete":
+        raise PartPayloadInvalid("state", "must be complete")
+
+
 #: Every registered family, and the validator for its payload. Closed over the
 #: families Core produces -- see the module docstring on producer-first.
 _VALIDATORS: Final[Mapping[str, Any]] = {
@@ -232,6 +257,7 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     ATTACHMENT_PART_TYPE: _validate_attachment,
     REASONING_SUMMARY_PART_TYPE: _validate_reasoning_summary,
     TOOL_CALL_PART_TYPE: _validate_tool_call,
+    WEB_SEARCH_PART_TYPE: _validate_web_search,
 }
 
 #: The registered family names, for a caller that wants to report the registry
