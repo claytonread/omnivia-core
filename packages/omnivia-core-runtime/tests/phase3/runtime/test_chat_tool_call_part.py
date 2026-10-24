@@ -8,23 +8,20 @@ the event's content was dropped. These tests hold the link that replaces that:
   crash mid-stream keeps what the provider already asked for -- the guarantee
   `append_provider_text_delta` gives text, and the reason the part is not
   assembled from memory at commit;
-- it is DENIED in the same breath, because nothing in this build executes a
-  provider tool. Left at `proposed` it would be permanently unfinished (the
-  row's own CHECK ties `finished_at_us` to the four terminal states) and would
-  ride every snapshot page claiming a turn is blocked after the generation has
-  committed;
-- its `registry_ref` says `unadmitted:provider-proposal`, because there is no
-  governed tool registry anywhere in Core to admit it against. A plausible
-  reference would put an admission that never happened into the one ledger an
-  auditor reads to find out what was admitted;
+- it remains proposed until either an exact provider `tool-result` settles it
+  or the stream reaches a terminal boundary. The latter denies an unresolved
+  proposal so it cannot remain permanently unfinished after the generation;
+- its `registry_ref` and version identify the narrowly bounded
+  provider-reported lifecycle. This records what the installed provider already
+  executed; it does not claim that Core admitted or executed the command;
 - the committed Message carries one `tool.call` part per ledger row, after its
   text, and that part carries NO arguments in any form -- not the values, not
   the digest. The registry closes the shape so the absence is enforced;
 - the Message `content_hash` covers the whole part list, and a text-only commit
   hashes exactly as it did before C9, so no durable message changes meaning;
-- the whole thing is idempotent under a redelivered stream, and the denied call
-  never enters the C8 review lifecycle, so a restart's `recover_tool_calls`
-  leaves it alone.
+- the whole thing is idempotent under a redelivered stream; provider results
+  settle calls while unresolved proposals are denied at the terminal boundary,
+  and neither path enters the C8 review lifecycle.
 """
 
 from __future__ import annotations
@@ -41,8 +38,8 @@ import pytest
 import test_chat_request_manifest as base
 from omnivia_core_runtime.service.chat_generation_executor import (
     NO_EXECUTION_PATH,
-    UNADMITTED_REGISTRY_REF,
-    UNADMITTED_TOOL_VERSION,
+    PROVIDER_REPORTED_REGISTRY_REF,
+    PROVIDER_REPORTED_TOOL_VERSION,
     _message_hash,
     tool_call_part_payload,
 )
@@ -171,23 +168,17 @@ def test_a_provider_tool_call_is_recorded_and_denied_in_one_generation(seeded: m
     assert len(calls) == 1
     call = calls[0]
     assert call.tool_name == "read_file"
-    # Denied, terminal, and finished -- never left `proposed`.
+    # No result followed, so the terminal stream boundary denies the proposal.
     assert call.state == "denied"
     assert call.policy_state == "denied"
     assert call.failure_code == NO_EXECUTION_PATH
     assert call.finished_at_us is not None
-    # And it says, in the ledger, that it was admitted against nothing.
-    #
-    # PINNED AS LITERALS, not compared to the constants. Comparing to
-    # `UNADMITTED_REGISTRY_REF` passes whatever that constant is changed to --
-    # including a plausible-looking `core.tools/read_file@1`, which is the exact
-    # falsehood this value exists to avoid. The constants are checked against
-    # the literals separately, so a rename still has one place to update.
-    assert call.registry_ref == "unadmitted:provider-proposal"
-    assert call.tool_version == "unadmitted"
-    assert UNADMITTED_REGISTRY_REF == "unadmitted:provider-proposal"
-    assert UNADMITTED_TOOL_VERSION == "unadmitted"
-    assert call.registry_ref.startswith("unadmitted:"), "it must read as an absence"
+    # The source marker says only that F2a reported the lifecycle. It is not a
+    # claim that a governed Core tool registry admitted or executed the call.
+    assert call.registry_ref == "provider-reported:f2a-tool-result"
+    assert call.tool_version == "f2a-v1"
+    assert PROVIDER_REPORTED_REGISTRY_REF == "provider-reported:f2a-tool-result"
+    assert PROVIDER_REPORTED_TOOL_VERSION == "f2a-v1"
 
 
 def test_the_arguments_are_recorded_in_the_ledger_and_published_nowhere(seeded: m1.Owned) -> None:
@@ -344,7 +335,7 @@ def test_the_message_hash_covers_the_parts_not_just_the_text() -> None:
         tool_name = "read_file"
         tool_call_id = "toolcall-abc"
         state = "denied"
-        registry_ref = UNADMITTED_REGISTRY_REF
+        registry_ref = PROVIDER_REPORTED_REGISTRY_REF
 
     withpart, hashes = _message_hash(text, (Row(),))  # type: ignore[arg-type]
     assert withpart != bare, "a message with a tool call is not the same message"
@@ -486,6 +477,99 @@ def test_canonical_trace_03_commits_two_calls_on_distinct_steps_in_provider_orde
     assert [part.part_type for part in committed] == [TOOL_CALL_PART_TYPE, TOOL_CALL_PART_TYPE]
     assert [part.part_index for part in committed] == [0, 1]
     assert [part.payload["id"] for part in committed] == [call.tool_call_id for call in calls]
+    assert [call.state for call in calls] == ["succeeded", "succeeded"]
+    assert [part.payload["state"] for part in committed] == ["succeeded", "succeeded"]
+    assert [
+        chat.read_chat_tool_result(
+            seeded.connection, workspace_id=WORKSPACE_ID, tool_call_id=call.tool_call_id
+        ).status
+        for call in calls
+    ] == ["succeeded", "succeeded"]
+
+
+def test_provider_reported_error_settles_the_call_failed_without_publishing_output(
+    seeded: m1.Owned,
+) -> None:
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        yield wire(
+            request,
+            1,
+            "tool-call",
+            toolCallId="command-1",
+            stepId="step-1",
+            toolName="codex.read_only_command",
+            input={},
+        )
+        yield wire(
+            request,
+            2,
+            "tool-result",
+            toolCallId="command-1",
+            stepId="step-1",
+            output={"exitCode": 1},
+            isError=True,
+        )
+        yield wire(request, 3, "text-delta", delta="done", partId="part-1", stepId="step-2")
+        yield wire(request, 4, "finish", finishReason="stop")
+
+    run(seeded, Scripted(script))
+
+    assert status(seeded).state == "succeeded"
+    call = ledger(seeded)[0]
+    assert call.state == "failed"
+    assert call.policy_state == "approved"
+    assert call.failure_code == "provider_reported_tool_failure"
+    result = chat.read_chat_tool_result(
+        seeded.connection, workspace_id=WORKSPACE_ID, tool_call_id=call.tool_call_id
+    )
+    assert result is not None
+    assert result.status == "failed"
+    assert dict(result.result_payload) == {"exitCode": 1}
+    projected = [dict(part.payload) for part in parts(seeded)]
+    assert projected[-1]["state"] == "failed"
+    assert "exitCode" not in json.dumps(projected)
+
+
+def test_unmatched_tool_result_fails_and_closes_the_existing_proposal(
+    seeded: m1.Owned,
+) -> None:
+    def script(request: Any) -> Iterator[dict[str, Any]]:
+        yield wire(request, 0, "stream-start")
+        yield wire(
+            request,
+            1,
+            "tool-call",
+            toolCallId="command-1",
+            stepId="step-1",
+            toolName="codex.read_only_command",
+            input={},
+        )
+        yield wire(
+            request,
+            2,
+            "tool-result",
+            toolCallId="command-1",
+            stepId="wrong-step",
+            output={"exitCode": 0},
+        )
+
+    run(seeded, Scripted(script))
+
+    assert status(seeded).state == "failed"
+    calls = chat.read_chat_tool_calls_for_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=base.JOB_ID,
+    )
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.state == "denied"
+    assert call.failure_code == NO_EXECUTION_PATH
+    assert chat.read_chat_tool_result(
+        seeded.connection, workspace_id=WORKSPACE_ID, tool_call_id=call.tool_call_id
+    ) is None
+    assert assistant_messages(seeded) == []
 
 
 def test_canonical_trace_03_replay_converges_to_the_same_rows(seeded: m1.Owned) -> None:
@@ -497,7 +581,12 @@ def test_canonical_trace_03_replay_converges_to_the_same_rows(seeded: m1.Owned) 
     assert assistant_messages(seeded) == []
     before = [
         tuple(row)
-        for table in ("omnivia_chat_tool_calls", "omnivia_chat_turn_steps", "omnivia_chat_turns")
+        for table in (
+            "omnivia_chat_tool_calls",
+            "omnivia_chat_tool_results",
+            "omnivia_chat_turn_steps",
+            "omnivia_chat_turns",
+        )
         for row in seeded.connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2, 3")
     ]
     assert count(seeded, "omnivia_chat_tool_calls") == 2
@@ -507,7 +596,12 @@ def test_canonical_trace_03_replay_converges_to_the_same_rows(seeded: m1.Owned) 
     assert status(seeded).state == "succeeded"
     after = [
         tuple(row)
-        for table in ("omnivia_chat_tool_calls", "omnivia_chat_turn_steps", "omnivia_chat_turns")
+        for table in (
+            "omnivia_chat_tool_calls",
+            "omnivia_chat_tool_results",
+            "omnivia_chat_turn_steps",
+            "omnivia_chat_turns",
+        )
         for row in seeded.connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2, 3")
     ]
     # The ledger the replay left is the one the crash left, byte for byte.
@@ -597,7 +691,7 @@ def test_a_tool_call_only_message_hash_is_over_the_typed_parts_alone() -> None:
         tool_name = "read_file"
         tool_call_id = "toolcall-abc"
         state = "denied"
-        registry_ref = UNADMITTED_REGISTRY_REF
+        registry_ref = PROVIDER_REPORTED_REGISTRY_REF
 
     only, hashes = _message_hash("", (Row(),))  # type: ignore[arg-type]
     assert len(hashes) == 1, "no empty text part is invented"

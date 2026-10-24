@@ -67,8 +67,11 @@ from omnivia_core_runtime.service.chat_part_registry import (
     validate_registered_payload,
 )
 from omnivia_core_runtime.service.chat_tool_lifecycle import (
+    PROVIDER_REPORTED_REGISTRY_REF,
+    PROVIDER_REPORTED_TOOL_VERSION,
     deny_tool_call,
     open_chat_turn,
+    record_provider_tool_result,
     record_tool_proposal,
 )
 from omnivia_core_runtime.storage import chat
@@ -569,21 +572,9 @@ def _existing_manifest_timestamps(
     return requested_at, deadline_at
 
 
-#: The registry reference recorded for a provider-proposed tool call.
-#:
-#: SELF-DESCRIBING ON PURPOSE. `registry_ref` means "the governed tool registry
-#: entry this call was admitted against", and this build admits none: there is
-#: no governed tool registry anywhere in Core -- `GovernedTool` is a dataclass
-#: a caller supplies, and nothing calls `run_governed_tool` at all. Recording a
-#: plausible-looking reference would put an admission that never happened into
-#: the one ledger an auditor reads to find out what was admitted. This value
-#: says what is true, and `UNADMITTED_TOOL_VERSION` says it again for the
-#: version Core was never told.
-UNADMITTED_REGISTRY_REF: Final = "unadmitted:provider-proposal"
-UNADMITTED_TOOL_VERSION: Final = "unadmitted"
-
-#: Why a provider-proposed tool call is denied the moment it is recorded.
+#: Why a provider-proposed tool call without a result is denied at the terminal boundary.
 NO_EXECUTION_PATH: Final = "no_governed_execution_path"
+MAX_PROVIDER_TOOL_RESULT_BYTES: Final = 64 * 1024
 
 
 def tool_call_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
@@ -597,12 +588,19 @@ def tool_call_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
     than remembered.
 
     `state` is the row's own state, verbatim, not translated into a consumer's
-    display vocabulary. `detail` says why in words, because `unadmitted` and
-    `denied` are accurate and tell a reader nothing on their own.
+    display vocabulary. `detail` is fixed Core prose: provider output and call
+    arguments never become transcript content.
     """
     payload: dict[str, Any] = {"name": call.tool_name, "id": call.tool_call_id, "state": call.state}
-    if call.registry_ref == UNADMITTED_REGISTRY_REF:
-        payload["detail"] = "Proposed by the model. Not run: no governed tool is admitted here."
+    if call.registry_ref == PROVIDER_REPORTED_REGISTRY_REF:
+        if call.state == "succeeded":
+            payload["detail"] = "The connected provider reported this tool call completed."
+        elif call.state == "failed":
+            payload["detail"] = "The connected provider reported this tool call failed."
+        else:
+            payload["detail"] = (
+                "Proposed by the model. Not run by OmniVia: no governed tool execution path was available."
+            )
     return payload
 
 
@@ -1101,6 +1099,8 @@ class ChatGenerationExecutor:
                     saw_start = True
                 elif not saw_start:
                     raise GenerationExecutorError("the provider stream has no leading start event")
+                if event_type in _TERMINAL_PROVIDER_EVENTS:
+                    self._deny_unsettled_provider_calls(job.generation_job_id, attempt_id)
                 if event_type == "text-delta":
                     delta = event.get("delta")
                     if not isinstance(delta, str):
@@ -1180,6 +1180,12 @@ class ChatGenerationExecutor:
                         step_ordinal=tool_call_ordinal,
                     )
                     tool_call_ordinal += 1
+                elif event_type == "tool-result":
+                    self._record_provider_tool_result(
+                        job=job,
+                        attempt_id=attempt_id,
+                        event=event,
+                    )
                 elif event_type == "finish" and event.get("finishReason") not in {
                     "error",
                     "cancelled",
@@ -1369,6 +1375,7 @@ class ChatGenerationExecutor:
             and status.current_attempt_id == attempt_id
         ):
             return
+        self._deny_unsettled_provider_calls(generation_job_id, attempt_id)
         append_provider_generation_event(
             self.connection,
             self.identity,
@@ -1811,21 +1818,17 @@ class ChatGenerationExecutor:
         event: Mapping[str, Any],
         step_ordinal: int,
     ) -> None:
-        """Make one provider `tool-call` event durable, then deny it.
+        """Make one provider `tool-call` event durable pending a result or terminal.
 
-        WHY IT IS DENIED IMMEDIATELY. Nothing in this build executes a provider
-        tool: `run_governed_tool` has no caller and there is no governed tool
-        registry to admit one against. A call left at `proposed` would be
-        permanently unfinished -- the row's own CHECK ties `finished_at_us` to
-        the four terminal states -- so it would ride every snapshot page
-        forever and tell a reader the turn is blocked on a tool call when the
-        generation has already committed. `deny_tool_call` records the truth
-        instead: policy denied it, because there is no execution path.
+        A canonical F2a `tool-result` may follow when the provider itself ran
+        the operation. Until then this is only a proposal. The terminal boundary
+        denies any call still unresolved, preserving the old no-execution truth
+        for OpenAI-style function calls that expect the application to run them.
 
-        `deny_tool_call` writes no row in the lifecycle-events table, which is
-        the table `recover_tool_calls` reads, so a restart never tries to settle
-        one of these. That is also why the C8 review lifecycle is untouched
-        here: these calls never enter it, and they never open a wait.
+        These provider-reported calls write no review-lifecycle row, so they do
+        not enter C8 Review or open a wait. A crash leaves the proposal durable;
+        replaying the same stream either settles the same result or denies it at
+        the terminal boundary.
 
         THE ARGUMENTS ARE RECORDED, NOT PUBLISHED. `proposed_arguments` is what
         the ledger is for and it is digested there; the `tool.call` message part
@@ -1884,20 +1887,71 @@ class ChatGenerationExecutor:
             step_ordinal=step_ordinal,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            tool_version=UNADMITTED_TOOL_VERSION,
-            registry_ref=UNADMITTED_REGISTRY_REF,
+            tool_version=PROVIDER_REPORTED_TOOL_VERSION,
+            registry_ref=PROVIDER_REPORTED_REGISTRY_REF,
             proposed_arguments=dict(arguments),
             now_us=now_us,
         )
-        deny_tool_call(
-            self.connection,
-            self.identity,
-            workspace_id=self.workspace_id,
-            fencing_generation=self.fencing_generation,
-            tool_call_id=tool_call_id,
-            failure_code=NO_EXECUTION_PATH,
-            now_us=now_us,
+
+    def _record_provider_tool_result(
+        self,
+        *,
+        job: chat.GenerationJob,
+        attempt_id: str,
+        event: Mapping[str, Any],
+    ) -> None:
+        """Settle only the exact call identity named by a bounded F2a result."""
+        provider_call_id = event.get("toolCallId")
+        provider_step_id = event.get("stepId")
+        output = event.get("output")
+        is_error = event.get("isError", False)
+        if (
+            not isinstance(provider_call_id, str)
+            or not _PROVIDER_ID.fullmatch(provider_call_id)
+            or not isinstance(provider_step_id, str)
+            or not _PROVIDER_ID.fullmatch(provider_step_id)
+            or not isinstance(output, Mapping)
+            or not isinstance(is_error, bool)
+        ):
+            raise GenerationExecutorError("a provider tool result is malformed")
+        try:
+            output_document = to_canonical_json(dict(output)).encode("utf-8")
+        except Exception as error:
+            raise GenerationExecutorError("a provider tool result is malformed") from error
+        if len(output_document) > MAX_PROVIDER_TOOL_RESULT_BYTES:
+            raise GenerationExecutorError("a provider tool result exceeds message bounds")
+        tool_call_id = _stable_id(
+            "toolcall", json.dumps([attempt_id, provider_step_id, provider_call_id])
         )
+        try:
+            record_provider_tool_result(
+                self.connection,
+                self.identity,
+                workspace_id=self.workspace_id,
+                fencing_generation=self.fencing_generation,
+                tool_call_id=tool_call_id,
+                result_payload=dict(output),
+                is_error=is_error,
+                now_us=_now_us(self.clock),
+            )
+        except Exception as error:
+            raise GenerationExecutorError("a provider tool result is unmatched or unsafe") from error
+
+    def _deny_unsettled_provider_calls(self, generation_job_id: str, attempt_id: str) -> None:
+        """Close every call that reached a terminal stream without a result."""
+        for call in self._attempt_tool_calls(generation_job_id, attempt_id):
+            if call.state == "proposed":
+                deny_tool_call(
+                    self.connection,
+                    self.identity,
+                    workspace_id=self.workspace_id,
+                    fencing_generation=self.fencing_generation,
+                    tool_call_id=call.tool_call_id,
+                    failure_code=NO_EXECUTION_PATH,
+                    now_us=_now_us(self.clock),
+                )
+            elif call.state not in {"succeeded", "failed", "denied", "cancelled"}:
+                raise GenerationExecutorError("a provider tool lifecycle ended without a result")
 
     def _materialize_assistant(self, *, job: chat.GenerationJob, text: str) -> str:
         message_id = _stable_id("assistant", job.generation_job_id)

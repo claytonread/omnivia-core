@@ -23,6 +23,9 @@ from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = [
     "MAX_SUMMARY_PARAMETERS",
+    "PROVIDER_REPORTED_REGISTRY_REF",
+    "PROVIDER_REPORTED_TOOL_FAILURE",
+    "PROVIDER_REPORTED_TOOL_VERSION",
     "ChatToolLifecycleConflict",
     "ChatToolLifecycleError",
     "ChatToolNotFound",
@@ -35,12 +38,16 @@ __all__ = [
     "derive_action_summary",
     "execute_governed_tool_once",
     "open_chat_turn",
+    "record_provider_tool_result",
     "record_tool_proposal",
     "replay_chat_turn",
     "validate_action_summary",
 ]
 
 _TERMINAL_TOOL_STATES: Final = frozenset({"succeeded", "failed", "denied", "cancelled"})
+PROVIDER_REPORTED_REGISTRY_REF: Final = "provider-reported:f2a-tool-result"
+PROVIDER_REPORTED_TOOL_VERSION: Final = "f2a-v1"
+PROVIDER_REPORTED_TOOL_FAILURE: Final = "provider_reported_tool_failure"
 _SENSITIVE_MARKERS: Final = (
     "authorization",
     "bearer",
@@ -617,6 +624,146 @@ def execute_governed_tool_once(
     if result is None:  # pragma: no cover - transaction above just committed it
         raise StorageError(f"chat tool result for {tool_call_id!r} did not settle")
     return result
+
+
+def record_provider_tool_result(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    tool_call_id: str,
+    result_payload: Mapping[str, Any],
+    is_error: bool,
+    now_us: int,
+) -> chat.ChatToolResult:
+    """Settle one call from the canonical provider-reported `tool-result` event.
+
+    This does not execute a tool. The trusted provider adapter already observed
+    the provider-managed lifecycle and F2a carries only its bounded result. The
+    call must have been recorded under the provider-reported registry marker;
+    ordinary unadmitted model proposals remain ineligible and are denied by the
+    generation executor at the terminal boundary.
+
+    The durable state machine has no direct proposed-to-terminal transition, so
+    the recorded provider result advances through approved and executing before
+    the result and terminal call state commit together. Those transitions mean
+    "the admitted provider route reports it ran", never that Core invoked the
+    operation. Replays converge on the one result row and exact payload digest.
+    """
+    _assert_safe_json(result_payload, label="provider-reported chat tool result")
+    if not isinstance(is_error, bool):
+        raise MalformedToolProposal("provider-reported tool result status must be boolean")
+    call = _require_tool_call(connection, workspace_id=workspace_id, tool_call_id=tool_call_id)
+    if (
+        call.registry_ref != PROVIDER_REPORTED_REGISTRY_REF
+        or call.tool_version != PROVIDER_REPORTED_TOOL_VERSION
+    ):
+        raise ChatToolLifecycleConflict("tool call is not provider-result managed")
+
+    status = "failed" if is_error else "succeeded"
+    result_id = f"{tool_call_id}.provider-result"
+    result_digest = _digest_json(result_payload)
+    existing_result = chat.read_chat_tool_result(
+        connection, workspace_id=workspace_id, tool_call_id=tool_call_id
+    )
+    if existing_result is not None:
+        if (
+            existing_result.result_id == result_id
+            and existing_result.status == status
+            and existing_result.result_digest == result_digest
+            and call.state == status
+            and call.result_id == result_id
+        ):
+            return existing_result
+        raise ChatToolLifecycleConflict("provider-reported tool result conflicts with the durable result")
+    if call.state in _TERMINAL_TOOL_STATES:
+        raise ChatToolLifecycleConflict("terminal tool call has no matching provider result")
+
+    if call.state == "proposed":
+        call = approve_tool_call(
+            connection,
+            identity,
+            workspace_id=workspace_id,
+            fencing_generation=fencing_generation,
+            tool_call_id=tool_call_id,
+            post_policy_arguments=call.proposed_arguments,
+            now_us=now_us,
+        )
+    if call.state == "approved":
+        step = _require_step(connection, workspace_id=workspace_id, step_id=call.step_id)
+        executed_digest = call.post_policy_arguments_digest
+        if executed_digest is None:  # pragma: no cover - approved rows require it in storage
+            raise ChatToolLifecycleConflict("approved provider call has no argument digest")
+        with chat.chat_writer(
+            connection,
+            identity,
+            workspace_id=workspace_id,
+            fencing_generation=fencing_generation,
+        ) as writer:
+            writer.update_chat_tool_call(
+                tool_call_id=tool_call_id,
+                expected_version=call.version,
+                state="executing",
+                policy_state="approved",
+                post_policy_arguments=call.post_policy_arguments,
+                executed_arguments_digest=executed_digest,
+                updated_at_us=now_us,
+            )
+            writer.update_chat_turn_step(
+                step_id=step.step_id,
+                expected_version=step.version,
+                state="executing",
+                updated_at_us=now_us,
+            )
+        call = _require_tool_call(connection, workspace_id=workspace_id, tool_call_id=tool_call_id)
+    if call.state != "executing":
+        raise ChatToolLifecycleConflict("provider-reported tool call is not executable")
+
+    step = _require_step(connection, workspace_id=workspace_id, step_id=call.step_id)
+    with chat.chat_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.append_chat_tool_result(
+            conversation_id=call.conversation_id,
+            turn_id=call.turn_id,
+            step_id=call.step_id,
+            generation_job_id=call.generation_job_id,
+            generation_attempt_id=call.generation_attempt_id,
+            tool_call_id=tool_call_id,
+            result_id=result_id,
+            status=status,
+            result_payload=result_payload,
+            created_at_us=now_us,
+        )
+        writer.update_chat_tool_call(
+            tool_call_id=tool_call_id,
+            expected_version=call.version,
+            state=status,
+            policy_state="approved",
+            post_policy_arguments=call.post_policy_arguments,
+            executed_arguments_digest=call.executed_arguments_digest,
+            result_id=result_id,
+            failure_code=PROVIDER_REPORTED_TOOL_FAILURE if is_error else None,
+            updated_at_us=now_us,
+            finished_at_us=now_us,
+        )
+        writer.update_chat_turn_step(
+            step_id=step.step_id,
+            expected_version=step.version,
+            state=status,
+            updated_at_us=now_us,
+            finished_at_us=now_us,
+        )
+    stored = chat.read_chat_tool_result(
+        connection, workspace_id=workspace_id, tool_call_id=tool_call_id
+    )
+    if stored is None:  # pragma: no cover - transaction above just committed it
+        raise StorageError(f"provider-reported chat tool result for {tool_call_id!r} did not settle")
+    return stored
 
 
 def replay_chat_turn(
