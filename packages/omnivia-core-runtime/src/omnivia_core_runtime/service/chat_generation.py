@@ -81,6 +81,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
+    COMPARISON_MATRIX_PART_TYPE,
+    COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     DIAGRAM_FLOW_PART_TYPE,
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
@@ -1618,6 +1620,7 @@ def append_provider_structured_output(
     if schema_ref not in {
         ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
         CHART_RESPONSE_SCHEMA_REF,
+        COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
         DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
         MATH_STEPS_RESPONSE_SCHEMA_REF,
@@ -1672,6 +1675,11 @@ def append_provider_structured_output(
         and normalized_output.get("detail") is None
     ):
         normalized_output.pop("detail", None)
+    if (
+        schema_ref == COMPARISON_MATRIX_RESPONSE_SCHEMA_REF
+        and normalized_output.get("detail") is None
+    ):
+        normalized_output.pop("detail", None)
     try:
         output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
@@ -1707,6 +1715,10 @@ def append_provider_structured_output(
         part_type = MATH_STEPS_PART_TYPE
         part_payload = normalized_output
         schema_label = "math-steps"
+    elif schema_ref == COMPARISON_MATRIX_RESPONSE_SCHEMA_REF:
+        part_type = COMPARISON_MATRIX_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "comparison-matrix"
     else:
         part_type = SPEC_SHEET_PART_TYPE
         part_payload = normalized_output

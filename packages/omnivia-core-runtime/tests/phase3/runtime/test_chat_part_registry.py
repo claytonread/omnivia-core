@@ -27,6 +27,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
+    COMPARISON_MATRIX_PART_TYPE,
+    COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     DIAGRAM_FLOW_PART_TYPE,
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
@@ -85,10 +87,12 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   activity.series validated structured UTC calendar series materialised by the executor
     #   math.steps  validated structured-math derivation materialised by the executor
     #   spec.sheet  validated text-only specification sheet materialised by the executor
+    #   comparison.matrix validated option-by-trait matrix materialised by the executor
     assert REGISTERED_PART_TYPES == (
         ACTIVITY_SERIES_PART_TYPE,
         ATTACHMENT_PART_TYPE,
         CHART_PART_TYPE,
+        COMPARISON_MATRIX_PART_TYPE,
         DIAGRAM_FLOW_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
         MATH_STEPS_PART_TYPE,
@@ -111,6 +115,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(RICH_PROSE_PART_TYPE)
     assert is_registered_part_type(METRIC_NUMBER_PART_TYPE)
     assert is_registered_part_type(CHART_PART_TYPE)
+    assert is_registered_part_type(COMPARISON_MATRIX_PART_TYPE)
     assert is_registered_part_type(DIAGRAM_FLOW_PART_TYPE)
     assert is_registered_part_type(ACTIVITY_SERIES_PART_TYPE)
     assert is_registered_part_type(MATH_STEPS_PART_TYPE)
@@ -236,6 +241,10 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
     validate_registered_payload(
         RESPONSE_FORMAT_PART_TYPE,
         {"schemaRef": SPEC_SHEET_RESPONSE_SCHEMA_REF},
+    )
+    validate_registered_payload(
+        RESPONSE_FORMAT_PART_TYPE,
+        {"schemaRef": COMPARISON_MATRIX_RESPONSE_SCHEMA_REF},
     )
     for bad, field in (
         ({}, "schemaRef"),
@@ -508,6 +517,40 @@ def test_spec_sheet_is_exact_text_only_and_bounded() -> None:
     for bad, field in cases:
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(SPEC_SHEET_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_comparison_matrix_is_exact_bounded_and_rectangular() -> None:
+    valid = {
+        "title": "Plans",
+        "detail": "Choose for the workload",
+        "columns": ["Standard", "Pro"],
+        "items": [
+            {"label": "Price", "values": ["$10", "$20"]},
+            {"label": "Support", "values": ["", "Priority"]},
+        ],
+    }
+    validate_registered_payload(COMPARISON_MATRIX_PART_TYPE, valid)
+    cases = (
+        ({**valid, "title": ""}, "title"),
+        ({**valid, "title": "é" * 129}, "title"),
+        ({**valid, "detail": "é" * 2_049}, "detail"),
+        ({**valid, "columns": ["Only"]}, "columns"),
+        ({**valid, "columns": ["A", "B", "C", "D", "E", "F", "G"]}, "columns"),
+        ({**valid, "columns": ["", "Pro"]}, "columns[0]"),
+        ({**valid, "columns": ["é" * 129, "Pro"]}, "columns[0]"),
+        ({**valid, "items": []}, "items"),
+        ({**valid, "items": [{"label": "", "values": ["a", "b"]}]}, "items[0].label"),
+        ({**valid, "items": [{"label": "é" * 129, "values": ["a", "b"]}]}, "items[0].label"),
+        ({**valid, "items": [{"label": "Price", "values": ["a"]}]}, "items[0].values"),
+        ({**valid, "items": [{"label": "Price", "values": ["a", 2]}]}, "items[0].values[1]"),
+        ({**valid, "items": [{"label": "Price", "values": ["a", "é" * 2_049]}]}, "items[0].values[1]"),
+        ({**valid, "items": [{"label": "Price", "values": ["a", "b"], "recommended": True}]}, "items[0].recommended"),
+        ({**valid, "recommendation": 1}, "recommendation"),
+    )
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(COMPARISON_MATRIX_PART_TYPE, bad)
         assert refused.value.field == field
 
 

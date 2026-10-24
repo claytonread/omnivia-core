@@ -68,6 +68,8 @@ from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
+    COMPARISON_MATRIX_PART_TYPE,
+    COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     DIAGRAM_FLOW_PART_TYPE,
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
@@ -317,6 +319,17 @@ def _spec_sheet_provider_text(payload: Mapping[str, Any]) -> str:
     return "Specification:\n" + to_canonical_json(dict(payload))
 
 
+def _comparison_matrix_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed comparison matrix."""
+    try:
+        validate_registered_payload(COMPARISON_MATRIX_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed comparison matrix"
+        ) from error
+    return "Comparison:\n" + to_canonical_json(dict(payload))
+
+
 def _trigger_response_format(
     connection: sqlite3.Connection,
     *,
@@ -448,6 +461,10 @@ def _provider_context(
             elif part.part_type == SPEC_SHEET_PART_TYPE:
                 provider_parts.append(
                     {"kind": "text", "text": _spec_sheet_provider_text(part.payload)}
+                )
+            elif part.part_type == COMPARISON_MATRIX_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _comparison_matrix_provider_text(part.payload)}
                 )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None
@@ -846,6 +863,9 @@ def structured_output_message_part(
         payload = dict(output.output)
     elif output.schema_ref == SPEC_SHEET_RESPONSE_SCHEMA_REF:
         part_type = SPEC_SHEET_PART_TYPE
+        payload = dict(output.output)
+    elif output.schema_ref == COMPARISON_MATRIX_RESPONSE_SCHEMA_REF:
+        part_type = COMPARISON_MATRIX_PART_TYPE
         payload = dict(output.output)
     elif output.schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
         part_type = RICH_PROSE_PART_TYPE

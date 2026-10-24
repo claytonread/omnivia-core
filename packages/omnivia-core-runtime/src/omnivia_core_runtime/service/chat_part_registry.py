@@ -45,6 +45,8 @@ produces it. The families below are written by Core today:
   validated structured-math response producer.
 * `spec.sheet` -- `service/chat_generation_executor.py`, from only the
   validated structured specification-sheet response producer.
+* `comparison.matrix` -- `service/chat_generation_executor.py`, from only the
+  validated structured comparison-matrix response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -79,6 +81,8 @@ __all__ = [
     "ACTIVITY_SERIES_RESPONSE_SCHEMA_REF",
     "CHART_PART_TYPE",
     "CHART_RESPONSE_SCHEMA_REF",
+    "COMPARISON_MATRIX_PART_TYPE",
+    "COMPARISON_MATRIX_RESPONSE_SCHEMA_REF",
     "DATA_TABLE_RESPONSE_SCHEMA_REF",
     "DIAGRAM_FLOW_PART_TYPE",
     "DIAGRAM_FLOW_RESPONSE_SCHEMA_REF",
@@ -152,6 +156,7 @@ DIAGRAM_FLOW_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.diagram-flow.v1"
 ACTIVITY_SERIES_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.activity-series.v1"
 MATH_STEPS_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.math-steps.v1"
 SPEC_SHEET_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.spec-sheet.v1"
+COMPARISON_MATRIX_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.comparison-matrix.v1"
 
 #: The existing Platform typed-part family that owns the table block. Core emits
 #: only the one-block table subset below; registering the whole renderer vocabulary
@@ -175,6 +180,9 @@ MATH_STEPS_PART_TYPE: Final = "math.steps"
 
 #: One exact bounded text-only specification sheet emitted by its producer.
 SPEC_SHEET_PART_TYPE: Final = "spec.sheet"
+
+#: One exact bounded option-by-trait comparison emitted by its producer.
+COMPARISON_MATRIX_PART_TYPE: Final = "comparison.matrix"
 
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
@@ -213,6 +221,11 @@ SPEC_SHEET_MAX_TITLE_UTF8_BYTES: Final = 256
 SPEC_SHEET_MAX_DETAIL_UTF8_BYTES: Final = 4_096
 SPEC_SHEET_MAX_LABEL_UTF8_BYTES: Final = 256
 SPEC_SHEET_MAX_VALUE_UTF8_BYTES: Final = 4_096
+COMPARISON_MATRIX_MAX_OPTIONS: Final = 6
+COMPARISON_MATRIX_MAX_TRAITS: Final = 12
+COMPARISON_MATRIX_MAX_LABEL_UTF8_BYTES: Final = 256
+COMPARISON_MATRIX_MAX_DETAIL_UTF8_BYTES: Final = 4_096
+COMPARISON_MATRIX_MAX_VALUE_UTF8_BYTES: Final = 4_096
 _WORKSPACE_SCOPED_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 #: Exact Core-authored families that are transcript presentation, not F2a
@@ -417,6 +430,7 @@ def _validate_response_format(payload: Mapping[str, Any]) -> None:
         MATH_STEPS_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
         SPEC_SHEET_RESPONSE_SCHEMA_REF,
+        COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
     }:
         raise PartPayloadInvalid("schemaRef", "is not a registered response schema")
 
@@ -922,6 +936,64 @@ def _validate_spec_sheet(payload: Mapping[str, Any]) -> None:
             raise PartPayloadInvalid(f"{prefix}value", "must be at most 4096 UTF-8 bytes")
 
 
+def _validate_comparison_matrix(payload: Mapping[str, Any]) -> None:
+    """The exact bounded rectangular shape mounted by Platform's Comparison Card."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "columns", "items"}),
+        optional=frozenset({"detail"}),
+    )
+    title = payload["title"]
+    if not isinstance(title, str) or title == "":
+        raise PartPayloadInvalid("title", "must be a non-empty string")
+    if len(title.encode("utf-8")) > COMPARISON_MATRIX_MAX_LABEL_UTF8_BYTES:
+        raise PartPayloadInvalid("title", "must be at most 256 UTF-8 bytes")
+    if "detail" in payload:
+        detail = payload["detail"]
+        if not isinstance(detail, str):
+            raise PartPayloadInvalid("detail", "must be a string")
+        if len(detail.encode("utf-8")) > COMPARISON_MATRIX_MAX_DETAIL_UTF8_BYTES:
+            raise PartPayloadInvalid("detail", "must be at most 4096 UTF-8 bytes")
+    columns = payload["columns"]
+    if not isinstance(columns, list) or not 2 <= len(columns) <= COMPARISON_MATRIX_MAX_OPTIONS:
+        raise PartPayloadInvalid("columns", "must contain between 2 and 6 options")
+    for index, column in enumerate(columns):
+        if not isinstance(column, str) or column == "":
+            raise PartPayloadInvalid(f"columns[{index}]", "must be a non-empty string")
+        if len(column.encode("utf-8")) > COMPARISON_MATRIX_MAX_LABEL_UTF8_BYTES:
+            raise PartPayloadInvalid(f"columns[{index}]", "must be at most 256 UTF-8 bytes")
+    items = payload["items"]
+    if not isinstance(items, list) or not 1 <= len(items) <= COMPARISON_MATRIX_MAX_TRAITS:
+        raise PartPayloadInvalid("items", "must contain between 1 and 12 traits")
+    for index, candidate in enumerate(items):
+        prefix = f"items[{index}]."
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(prefix[:-1], "must be an object")
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"label", "values"}),
+            optional=frozenset(),
+            prefix=prefix,
+        )
+        label = candidate["label"]
+        if not isinstance(label, str) or label == "":
+            raise PartPayloadInvalid(f"{prefix}label", "must be a non-empty string")
+        if len(label.encode("utf-8")) > COMPARISON_MATRIX_MAX_LABEL_UTF8_BYTES:
+            raise PartPayloadInvalid(f"{prefix}label", "must be at most 256 UTF-8 bytes")
+        values = candidate["values"]
+        if not isinstance(values, list) or len(values) != len(columns):
+            raise PartPayloadInvalid(f"{prefix}values", "must match the option count")
+        for value_index, value in enumerate(values):
+            if not isinstance(value, str):
+                raise PartPayloadInvalid(
+                    f"{prefix}values[{value_index}]", "must be a string"
+                )
+            if len(value.encode("utf-8")) > COMPARISON_MATRIX_MAX_VALUE_UTF8_BYTES:
+                raise PartPayloadInvalid(
+                    f"{prefix}values[{value_index}]", "must be at most 4096 UTF-8 bytes"
+                )
+
+
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
     """The exact one-table rich-prose subset emitted by the structured producer."""
     _require_exact_keys(payload, required=frozenset({"blocks"}), optional=frozenset())
@@ -979,6 +1051,7 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     TEXT_PART_TYPE: _validate_text,
     ATTACHMENT_PART_TYPE: _validate_attachment,
     CHART_PART_TYPE: _validate_chart,
+    COMPARISON_MATRIX_PART_TYPE: _validate_comparison_matrix,
     DIAGRAM_FLOW_PART_TYPE: _validate_diagram_flow,
     REASONING_SUMMARY_PART_TYPE: _validate_reasoning_summary,
     TOOL_CALL_PART_TYPE: _validate_tool_call,

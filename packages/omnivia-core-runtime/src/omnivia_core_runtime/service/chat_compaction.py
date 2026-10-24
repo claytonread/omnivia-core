@@ -21,6 +21,7 @@ from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_PART_TYPE,
     CHART_PART_TYPE,
+    COMPARISON_MATRIX_PART_TYPE,
     DIAGRAM_FLOW_PART_TYPE,
     MATH_STEPS_PART_TYPE,
     METRIC_NUMBER_PART_TYPE,
@@ -213,6 +214,20 @@ def _message_text_parts(
                 {
                     "kind": "text",
                     "text": "Specification:\n" + to_canonical_json(dict(part.payload)),
+                }
+            )
+            continue
+        if part.part_type == COMPARISON_MATRIX_PART_TYPE:
+            try:
+                validate_registered_payload(COMPARISON_MATRIX_PART_TYPE, part.payload)
+            except PartPayloadInvalid as error:
+                raise ChatCompactionConflict(
+                    "the selected chat lineage contains a malformed comparison matrix"
+                ) from error
+            parts.append(
+                {
+                    "kind": "text",
+                    "text": "Comparison:\n" + to_canonical_json(dict(part.payload)),
                 }
             )
             continue
