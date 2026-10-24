@@ -77,6 +77,8 @@ from omnivia_core.chat_contract.v1.generated import (
 )
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_part_registry import (
+    ACTIVITY_SERIES_PART_TYPE,
+    ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
@@ -1610,6 +1612,7 @@ def append_provider_structured_output(
         )
     schema_ref = _wire_str(provider_event, "schemaRef")
     if schema_ref not in {
+        ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
         CHART_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
         DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
@@ -1637,6 +1640,12 @@ def append_provider_structured_output(
         for optional_field in ("detail", "unit"):
             if normalized_output.get(optional_field) is None:
                 normalized_output.pop(optional_field, None)
+    if (
+        schema_ref == ACTIVITY_SERIES_RESPONSE_SCHEMA_REF
+        and "unit" in normalized_output
+        and normalized_output["unit"] is None
+    ):
+        del normalized_output["unit"]
     try:
         output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
@@ -1648,7 +1657,11 @@ def append_provider_structured_output(
             "provider event field 'output' exceeds the structured-output byte bound"
         )
 
-    if schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
+    if schema_ref == ACTIVITY_SERIES_RESPONSE_SCHEMA_REF:
+        part_type = ACTIVITY_SERIES_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "activity-series"
+    elif schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
         part_type = RICH_PROSE_PART_TYPE
         part_payload = {"blocks": [{**normalized_output, "kind": "table"}]}
         schema_label = "data-table"

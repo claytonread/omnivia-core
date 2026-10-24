@@ -39,6 +39,8 @@ produces it. The families below are written by Core today:
   structured chart response producer.
 * `diagram.flow` -- `service/chat_generation_executor.py`, from only the
   validated structured diagram-flow response producer.
+* `activity.series` -- `service/chat_generation_executor.py`, from only the
+  validated structured activity-series response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -61,6 +63,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping
+from datetime import date
 from typing import Any, Final
 
 #: An accepted attachment's part type is defined with the authority that writes
@@ -68,6 +71,8 @@ from typing import Any, Final
 from omnivia_core_runtime.service.chat_attachment_authority import ATTACHMENT_PART_TYPE
 
 __all__ = [
+    "ACTIVITY_SERIES_PART_TYPE",
+    "ACTIVITY_SERIES_RESPONSE_SCHEMA_REF",
     "CHART_PART_TYPE",
     "CHART_RESPONSE_SCHEMA_REF",
     "DATA_TABLE_RESPONSE_SCHEMA_REF",
@@ -136,6 +141,7 @@ DATA_TABLE_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.data-table.v1"
 NUMBER_TICKER_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.number-ticker.v1"
 CHART_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.chart.v1"
 DIAGRAM_FLOW_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.diagram-flow.v1"
+ACTIVITY_SERIES_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.activity-series.v1"
 
 #: The existing Platform typed-part family that owns the table block. Core emits
 #: only the one-block table subset below; registering the whole renderer vocabulary
@@ -150,6 +156,9 @@ CHART_PART_TYPE: Final = "chart"
 
 #: One exact bounded directed graph emitted by the diagram-flow producer.
 DIAGRAM_FLOW_PART_TYPE: Final = "diagram.flow"
+
+#: One exact bounded UTC calendar series emitted by the activity producer.
+ACTIVITY_SERIES_PART_TYPE: Final = "activity.series"
 
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
@@ -170,6 +179,11 @@ DIAGRAM_FLOW_MAX_GRID_INDEX: Final = 15
 DIAGRAM_FLOW_MAX_TITLE_UTF8_BYTES: Final = 256
 DIAGRAM_FLOW_MAX_LABEL_UTF8_BYTES: Final = 128
 DIAGRAM_FLOW_NODE_STATES: Final = frozenset({"done", "active", "pending"})
+ACTIVITY_SERIES_MAX_DAYS: Final = 366
+ACTIVITY_SERIES_MAX_TITLE_UTF8_BYTES: Final = 256
+ACTIVITY_SERIES_MAX_UNIT_UTF8_BYTES: Final = 64
+ACTIVITY_SERIES_MAX_TOTAL: Final = 1_000_000_000_000
+ACTIVITY_SERIES_MAX_COUNT: Final = 1_000_000_000
 _WORKSPACE_SCOPED_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 #: Exact Core-authored families that are transcript presentation, not F2a
@@ -368,6 +382,7 @@ def _validate_response_format(payload: Mapping[str, Any]) -> None:
     _require_text(payload, "schemaRef", maximum=512)
     if payload["schemaRef"] not in {
         CHART_RESPONSE_SCHEMA_REF,
+        ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
         DATA_TABLE_RESPONSE_SCHEMA_REF,
         DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
@@ -595,6 +610,93 @@ def _validate_diagram_flow(payload: Mapping[str, Any]) -> None:
         edge_keys.add(edge_key)
 
 
+def _activity_day(value: Any, field: str) -> date:
+    """Require Platform's exact canonical UTC calendar-day spelling."""
+    if not isinstance(value, str):
+        raise PartPayloadInvalid(field, "must be a canonical UTC YYYY-MM-DD date")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise PartPayloadInvalid(
+            field, "must be a canonical UTC YYYY-MM-DD date"
+        ) from None
+    if parsed.year < 1970 or parsed.isoformat() != value:
+        raise PartPayloadInvalid(
+            field, "must be a canonical UTC YYYY-MM-DD date from 1970 through 9999"
+        )
+    return parsed
+
+
+def _validate_activity_series(payload: Mapping[str, Any]) -> None:
+    """The exact internally consistent series accepted by Activity Graph."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "start", "end", "total", "points"}),
+        optional=frozenset({"unit"}),
+    )
+    _require_diagram_text(
+        payload,
+        "title",
+        maximum=ACTIVITY_SERIES_MAX_TITLE_UTF8_BYTES,
+    )
+    if "unit" in payload:
+        _require_diagram_text(
+            payload,
+            "unit",
+            maximum=ACTIVITY_SERIES_MAX_UNIT_UTF8_BYTES,
+        )
+    start = _activity_day(payload["start"], "start")
+    end = _activity_day(payload["end"], "end")
+    if end < start:
+        raise PartPayloadInvalid("end", "must not precede start")
+    if (end - start).days + 1 > ACTIVITY_SERIES_MAX_DAYS:
+        raise PartPayloadInvalid("end", "must span at most 366 inclusive days")
+    total = payload["total"]
+    if (
+        isinstance(total, bool)
+        or not isinstance(total, int)
+        or not 0 <= total <= ACTIVITY_SERIES_MAX_TOTAL
+    ):
+        raise PartPayloadInvalid(
+            "total", "must be an integer from 0 through 1000000000000"
+        )
+    points = payload["points"]
+    if not isinstance(points, list) or len(points) > ACTIVITY_SERIES_MAX_DAYS:
+        raise PartPayloadInvalid("points", "must contain at most 366 points")
+    previous: date | None = None
+    observed_total = 0
+    for index, candidate in enumerate(points):
+        prefix = f"points[{index}]."
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(prefix[:-1], "must be an object")
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"date", "count"}),
+            optional=frozenset(),
+            prefix=prefix,
+        )
+        current = _activity_day(candidate["date"], f"{prefix}date")
+        if current < start or current > end:
+            raise PartPayloadInvalid(f"{prefix}date", "must be within start and end")
+        if previous is not None and current <= previous:
+            raise PartPayloadInvalid(
+                f"{prefix}date", "must be strictly ascending and unique"
+            )
+        count = candidate["count"]
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= ACTIVITY_SERIES_MAX_COUNT
+        ):
+            raise PartPayloadInvalid(
+                f"{prefix}count", "must be an integer from 1 through 1000000000"
+            )
+        previous = current
+        observed_total += count
+    if observed_total != total:
+        raise PartPayloadInvalid("total", "must equal the sum of every sparse point")
+
+
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
     """The exact one-table rich-prose subset emitted by the structured producer."""
     _require_exact_keys(payload, required=frozenset({"blocks"}), optional=frozenset())
@@ -648,6 +750,7 @@ def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
 #: Every registered family, and the validator for its payload. Closed over the
 #: families Core produces -- see the module docstring on producer-first.
 _VALIDATORS: Final[Mapping[str, Any]] = {
+    ACTIVITY_SERIES_PART_TYPE: _validate_activity_series,
     TEXT_PART_TYPE: _validate_text,
     ATTACHMENT_PART_TYPE: _validate_attachment,
     CHART_PART_TYPE: _validate_chart,

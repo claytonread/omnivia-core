@@ -64,6 +64,8 @@ from omnivia_core_runtime.service.chat_generation import (
     stage_direction_continuation,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    ACTIVITY_SERIES_PART_TYPE,
+    ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
@@ -278,6 +280,17 @@ def _diagram_flow_provider_text(payload: Mapping[str, Any]) -> str:
     return "Diagram:\n" + to_canonical_json(dict(payload))
 
 
+def _activity_series_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed activity series."""
+    try:
+        validate_registered_payload(ACTIVITY_SERIES_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed activity series"
+        ) from error
+    return "Activity:\n" + to_canonical_json(dict(payload))
+
+
 def _trigger_response_format(
     connection: sqlite3.Connection,
     *,
@@ -397,6 +410,10 @@ def _provider_context(
             elif part.part_type == DIAGRAM_FLOW_PART_TYPE:
                 provider_parts.append(
                     {"kind": "text", "text": _diagram_flow_provider_text(part.payload)}
+                )
+            elif part.part_type == ACTIVITY_SERIES_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _activity_series_provider_text(part.payload)}
                 )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None
@@ -787,7 +804,10 @@ def guardrail_notice_part_payload() -> dict[str, Any]:
 def structured_output_message_part(
     output: chat.GenerationStructuredOutput,
 ) -> tuple[str, dict[str, Any]]:
-    if output.schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
+    if output.schema_ref == ACTIVITY_SERIES_RESPONSE_SCHEMA_REF:
+        part_type = ACTIVITY_SERIES_PART_TYPE
+        payload = dict(output.output)
+    elif output.schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
         part_type = RICH_PROSE_PART_TYPE
         payload = {"blocks": [{**dict(output.output), "kind": "table"}]}
     elif output.schema_ref == NUMBER_TICKER_RESPONSE_SCHEMA_REF:

@@ -23,6 +23,8 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
     attachment_part_payload,
 )
 from omnivia_core_runtime.service.chat_part_registry import (
+    ACTIVITY_SERIES_PART_TYPE,
+    ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
@@ -76,7 +78,9 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   metric.number  validated number-ticker output materialised by the executor
     #   chart       validated structured chart output materialised by the executor
     #   diagram.flow validated structured directed graph materialised by the executor
+    #   activity.series validated structured UTC calendar series materialised by the executor
     assert REGISTERED_PART_TYPES == (
+        ACTIVITY_SERIES_PART_TYPE,
         ATTACHMENT_PART_TYPE,
         CHART_PART_TYPE,
         DIAGRAM_FLOW_PART_TYPE,
@@ -100,6 +104,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(METRIC_NUMBER_PART_TYPE)
     assert is_registered_part_type(CHART_PART_TYPE)
     assert is_registered_part_type(DIAGRAM_FLOW_PART_TYPE)
+    assert is_registered_part_type(ACTIVITY_SERIES_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -209,6 +214,10 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
     validate_registered_payload(
         RESPONSE_FORMAT_PART_TYPE,
         {"schemaRef": DIAGRAM_FLOW_RESPONSE_SCHEMA_REF},
+    )
+    validate_registered_payload(
+        RESPONSE_FORMAT_PART_TYPE,
+        {"schemaRef": ACTIVITY_SERIES_RESPONSE_SCHEMA_REF},
     )
     for bad, field in (
         ({}, "schemaRef"),
@@ -358,6 +367,46 @@ def test_diagram_flow_is_exact_bounded_and_topologically_closed() -> None:
     for bad, field in cases:
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(DIAGRAM_FLOW_PART_TYPE, bad)
+        assert refused.value.field == field
+
+
+def test_activity_series_is_exact_bounded_and_internally_consistent() -> None:
+    valid = {
+        "title": "Contributions",
+        "start": "2024-02-26",
+        "end": "2024-03-03",
+        "total": 5,
+        "unit": "changes",
+        "points": [
+            {"date": "2024-02-27", "count": 2},
+            {"date": "2024-03-01", "count": 3},
+        ],
+    }
+    validate_registered_payload(ACTIVITY_SERIES_PART_TYPE, valid)
+    validate_registered_payload(
+        ACTIVITY_SERIES_PART_TYPE,
+        {"title": "Quiet", "start": "2024-01-01", "end": "2024-01-01", "total": 0, "points": []},
+    )
+    cases = (
+        ({**valid, "title": ""}, "title"),
+        ({**valid, "unit": " changes"}, "unit"),
+        ({**valid, "start": "1969-12-31"}, "start"),
+        ({**valid, "start": "2024-02-30"}, "start"),
+        ({**valid, "start": "20240301"}, "start"),
+        ({**valid, "start": "2024-03-04"}, "end"),
+        ({**valid, "start": "2023-01-01", "end": "2024-01-02"}, "end"),
+        ({**valid, "total": True}, "total"),
+        ({**valid, "total": 4}, "total"),
+        ({**valid, "points": [{"date": "2024-02-27", "count": 0}], "total": 0}, "points[0].count"),
+        ({**valid, "points": list(reversed(valid["points"]))}, "points[1].date"),
+        ({**valid, "points": [valid["points"][0], valid["points"][0]]}, "points[1].date"),
+        ({**valid, "points": [{"date": "2024-02-25", "count": 5}]}, "points[0].date"),
+        ({**valid, "points": [{"date": "2024-02-27", "count": 5, "action": "open"}]}, "points[0].action"),
+        ({**valid, "html": "<script>x</script>"}, "html"),
+    )
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(ACTIVITY_SERIES_PART_TYPE, bad)
         assert refused.value.field == field
 
 
