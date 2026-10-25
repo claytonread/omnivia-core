@@ -47,6 +47,14 @@ produces it. The families below are written by Core today:
   validated structured specification-sheet response producer.
 * `comparison.matrix` -- `service/chat_generation_executor.py`, from only the
   validated structured comparison-matrix response producer.
+* `timeline` -- `service/chat_generation_executor.py`, from only the
+  validated structured timeline response producer.
+* `score.breakdown` -- `service/chat_generation_executor.py`, from only the
+  validated structured score-breakdown response producer.
+* `code.diff` -- `service/chat_generation_executor.py`, from only the
+  validated structured code-diff response producer.
+* `file.tree` -- `service/chat_generation_executor.py`, from only the
+  validated structured file-tree response producer.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -81,11 +89,15 @@ __all__ = [
     "ACTIVITY_SERIES_RESPONSE_SCHEMA_REF",
     "CHART_PART_TYPE",
     "CHART_RESPONSE_SCHEMA_REF",
+    "CODE_DIFF_PART_TYPE",
+    "CODE_DIFF_RESPONSE_SCHEMA_REF",
     "COMPARISON_MATRIX_PART_TYPE",
     "COMPARISON_MATRIX_RESPONSE_SCHEMA_REF",
     "DATA_TABLE_RESPONSE_SCHEMA_REF",
     "DIAGRAM_FLOW_PART_TYPE",
     "DIAGRAM_FLOW_RESPONSE_SCHEMA_REF",
+    "FILE_TREE_PART_TYPE",
+    "FILE_TREE_RESPONSE_SCHEMA_REF",
     "GUARDRAIL_NOTICE_PART_TYPE",
     "GUARDRAIL_NOTICE_REASON",
     "GUARDRAIL_NOTICE_SAFE_MESSAGE",
@@ -99,9 +111,13 @@ __all__ = [
     "REGISTERED_PART_TYPES",
     "RESPONSE_FORMAT_PART_TYPE",
     "RICH_PROSE_PART_TYPE",
+    "SCORE_BREAKDOWN_PART_TYPE",
+    "SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF",
     "SPEC_SHEET_PART_TYPE",
     "SPEC_SHEET_RESPONSE_SCHEMA_REF",
     "TEXT_PART_TYPE",
+    "TIMELINE_PART_TYPE",
+    "TIMELINE_RESPONSE_SCHEMA_REF",
     "TOOL_CALL_PART_TYPE",
     "WEB_SEARCH_PART_TYPE",
     "PartPayloadInvalid",
@@ -157,6 +173,10 @@ ACTIVITY_SERIES_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.activity-series.v1"
 MATH_STEPS_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.math-steps.v1"
 SPEC_SHEET_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.spec-sheet.v1"
 COMPARISON_MATRIX_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.comparison-matrix.v1"
+TIMELINE_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.timeline.v1"
+SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.score-breakdown.v1"
+CODE_DIFF_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.code-diff.v1"
+FILE_TREE_RESPONSE_SCHEMA_REF: Final = "omnivia.chat.file-tree.v1"
 
 #: The existing Platform typed-part family that owns the table block. Core emits
 #: only the one-block table subset below; registering the whole renderer vocabulary
@@ -183,6 +203,18 @@ SPEC_SHEET_PART_TYPE: Final = "spec.sheet"
 
 #: One exact bounded option-by-trait comparison emitted by its producer.
 COMPARISON_MATRIX_PART_TYPE: Final = "comparison.matrix"
+
+#: One exact bounded past/now/future event sequence emitted by its producer.
+TIMELINE_PART_TYPE: Final = "timeline"
+
+#: One exact weighted per-criterion score whose total is the weighted sum.
+SCORE_BREAKDOWN_PART_TYPE: Final = "score.breakdown"
+
+#: One exact bounded single-file line diff emitted by its producer.
+CODE_DIFF_PART_TYPE: Final = "code.diff"
+
+#: One exact bounded relative path tree, parents before children.
+FILE_TREE_PART_TYPE: Final = "file.tree"
 
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
@@ -226,6 +258,31 @@ COMPARISON_MATRIX_MAX_TRAITS: Final = 12
 COMPARISON_MATRIX_MAX_LABEL_UTF8_BYTES: Final = 256
 COMPARISON_MATRIX_MAX_DETAIL_UTF8_BYTES: Final = 4_096
 COMPARISON_MATRIX_MAX_VALUE_UTF8_BYTES: Final = 4_096
+TIMELINE_MAX_ITEMS: Final = 64
+TIMELINE_MAX_TEXT_UTF8_BYTES: Final = 256
+TIMELINE_MAX_DETAIL_UTF8_BYTES: Final = 4_096
+TIMELINE_STATES: Final = frozenset({"past", "now", "future"})
+SCORE_BREAKDOWN_MAX_CRITERIA: Final = 16
+SCORE_BREAKDOWN_MAX_LABEL_UTF8_BYTES: Final = 256
+SCORE_BREAKDOWN_MAX_NOTE_UTF8_BYTES: Final = 1_024
+SCORE_BREAKDOWN_MAX_OUT_OF: Final = 1_000_000
+SCORE_BREAKDOWN_TOTAL_WEIGHT_BPS: Final = 10_000
+CODE_DIFF_MAX_HUNKS: Final = 64
+CODE_DIFF_MAX_LINES_PER_HUNK: Final = 500
+CODE_DIFF_MAX_TOTAL_LINES: Final = 2_000
+CODE_DIFF_MAX_FILE_UTF8_BYTES: Final = 1_024
+CODE_DIFF_MAX_HEADER_UTF8_BYTES: Final = 1_024
+CODE_DIFF_MAX_DETAIL_UTF8_BYTES: Final = 4_096
+CODE_DIFF_MAX_TEXT_UTF8_BYTES: Final = 4_096
+CODE_DIFF_CHANGES: Final = frozenset({"add", "remove", "context"})
+FILE_TREE_MAX_ITEMS: Final = 256
+FILE_TREE_MAX_DEPTH: Final = 8
+FILE_TREE_MAX_TITLE_UTF8_BYTES: Final = 256
+FILE_TREE_MAX_DETAIL_UTF8_BYTES: Final = 4_096
+FILE_TREE_MAX_PATH_UTF8_BYTES: Final = 1_024
+FILE_TREE_MAX_NAME_UTF8_BYTES: Final = 256
+FILE_TREE_MAX_COUNT: Final = 1_000_000
+FILE_TREE_KINDS: Final = frozenset({"folder", "file"})
 _WORKSPACE_SCOPED_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 #: Exact Core-authored families that are transcript presentation, not F2a
@@ -431,6 +488,10 @@ def _validate_response_format(payload: Mapping[str, Any]) -> None:
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
         SPEC_SHEET_RESPONSE_SCHEMA_REF,
         COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
+        TIMELINE_RESPONSE_SCHEMA_REF,
+        SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF,
+        CODE_DIFF_RESPONSE_SCHEMA_REF,
+        FILE_TREE_RESPONSE_SCHEMA_REF,
     }:
         raise PartPayloadInvalid("schemaRef", "is not a registered response schema")
 
@@ -994,6 +1055,293 @@ def _validate_comparison_matrix(payload: Mapping[str, Any]) -> None:
                 )
 
 
+def _bounded_text(
+    value: Any,
+    field: str,
+    *,
+    maximum: int,
+    nonempty: bool = True,
+    control_free: bool = False,
+    trimmed: bool = False,
+) -> str:
+    """One string field of the structured families below, at its exact rule."""
+    if not isinstance(value, str):
+        raise PartPayloadInvalid(field, "must be a string")
+    if nonempty and value == "":
+        raise PartPayloadInvalid(field, "must be non-empty")
+    if len(value.encode("utf-8")) > maximum:
+        raise PartPayloadInvalid(field, f"must be at most {maximum} UTF-8 bytes")
+    if control_free and any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise PartPayloadInvalid(field, "must be control-free")
+    if trimmed and value.strip() != value:
+        raise PartPayloadInvalid(field, "must be trimmed")
+    return value
+
+
+def _object_list(value: Any, field: str, *, minimum: int, maximum: int) -> list[Any]:
+    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+        raise PartPayloadInvalid(field, f"must contain between {minimum} and {maximum} entries")
+    for index, candidate in enumerate(value):
+        if not isinstance(candidate, Mapping):
+            raise PartPayloadInvalid(f"{field}[{index}]", "must be an object")
+    return value
+
+
+def _bounded_int(value: Any, field: str, *, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PartPayloadInvalid(field, "must be an integer")
+    if not minimum <= value <= maximum:
+        raise PartPayloadInvalid(field, f"must be between {minimum} and {maximum}")
+    return value
+
+
+def _finite_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PartPayloadInvalid(field, "must be a number")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise PartPayloadInvalid(field, "must be finite")
+    if value == 0 and isinstance(value, float) and math.copysign(1.0, value) < 0:
+        raise PartPayloadInvalid(field, "must not be negative zero")
+    return value
+
+
+def _validate_titled_detail(
+    payload: Mapping[str, Any], *, title_field: str, title_maximum: int, detail_maximum: int
+) -> None:
+    _bounded_text(payload[title_field], title_field, maximum=title_maximum)
+    if "detail" in payload:
+        _bounded_text(payload["detail"], "detail", maximum=detail_maximum, nonempty=False)
+
+
+def _validate_timeline(payload: Mapping[str, Any]) -> None:
+    """The exact bounded event sequence mounted by Platform's Timeline."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "items"}),
+        optional=frozenset({"detail"}),
+    )
+    _validate_titled_detail(
+        payload,
+        title_field="title",
+        title_maximum=TIMELINE_MAX_TEXT_UTF8_BYTES,
+        detail_maximum=TIMELINE_MAX_DETAIL_UTF8_BYTES,
+    )
+    items = _object_list(payload["items"], "items", minimum=1, maximum=TIMELINE_MAX_ITEMS)
+    for index, candidate in enumerate(items):
+        prefix = f"items[{index}]."
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"label", "value", "state"}),
+            optional=frozenset({"detail"}),
+            prefix=prefix,
+        )
+        for field in ("label", "value"):
+            _bounded_text(
+                candidate[field], f"{prefix}{field}", maximum=TIMELINE_MAX_TEXT_UTF8_BYTES
+            )
+        if not isinstance(candidate["state"], str) or candidate["state"] not in TIMELINE_STATES:
+            raise PartPayloadInvalid(f"{prefix}state", "must be past, now or future")
+        if "detail" in candidate:
+            _bounded_text(
+                candidate["detail"],
+                f"{prefix}detail",
+                maximum=TIMELINE_MAX_DETAIL_UTF8_BYTES,
+                nonempty=False,
+            )
+
+
+def _validate_score_breakdown(payload: Mapping[str, Any]) -> None:
+    """The exact weighted score whose total is the weighted sum of its criteria."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"verdict", "total", "outOf", "criteria"}),
+        optional=frozenset(),
+    )
+    _bounded_text(
+        payload["verdict"],
+        "verdict",
+        maximum=SCORE_BREAKDOWN_MAX_LABEL_UTF8_BYTES,
+        control_free=True,
+        trimmed=True,
+    )
+    out_of = _finite_number(payload["outOf"], "outOf")
+    if not 0 < out_of <= SCORE_BREAKDOWN_MAX_OUT_OF:
+        raise PartPayloadInvalid("outOf", "must be greater than 0 and at most 1000000")
+    total = _finite_number(payload["total"], "total")
+    if not 0 <= total <= out_of:
+        raise PartPayloadInvalid("total", "must be between 0 and outOf")
+    criteria = _object_list(
+        payload["criteria"], "criteria", minimum=1, maximum=SCORE_BREAKDOWN_MAX_CRITERIA
+    )
+    labels: set[str] = set()
+    weight_sum = 0
+    weighted_score = 0.0
+    for index, candidate in enumerate(criteria):
+        prefix = f"criteria[{index}]."
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"label", "score", "weightBps"}),
+            optional=frozenset({"note"}),
+            prefix=prefix,
+        )
+        label = _bounded_text(
+            candidate["label"],
+            f"{prefix}label",
+            maximum=SCORE_BREAKDOWN_MAX_LABEL_UTF8_BYTES,
+            control_free=True,
+            trimmed=True,
+        )
+        if label in labels:
+            raise PartPayloadInvalid(f"{prefix}label", "must be unique")
+        labels.add(label)
+        if "note" in candidate:
+            _bounded_text(
+                candidate["note"],
+                f"{prefix}note",
+                maximum=SCORE_BREAKDOWN_MAX_NOTE_UTF8_BYTES,
+                control_free=True,
+                trimmed=True,
+            )
+        score = _finite_number(candidate["score"], f"{prefix}score")
+        if not 0 <= score <= out_of:
+            raise PartPayloadInvalid(f"{prefix}score", "must be between 0 and outOf")
+        weight = _bounded_int(
+            candidate["weightBps"],
+            f"{prefix}weightBps",
+            minimum=1,
+            maximum=SCORE_BREAKDOWN_TOTAL_WEIGHT_BPS,
+        )
+        weight_sum += weight
+        weighted_score += score * weight / SCORE_BREAKDOWN_TOTAL_WEIGHT_BPS
+    if weight_sum != SCORE_BREAKDOWN_TOTAL_WEIGHT_BPS:
+        raise PartPayloadInvalid("criteria", "weightBps must sum to 10000")
+    if abs(weighted_score - total) > max(1e-9, out_of * 1e-12):
+        raise PartPayloadInvalid("total", "must equal the weighted criterion score")
+
+
+def _validate_code_diff(payload: Mapping[str, Any]) -> None:
+    """The exact bounded single-file diff mounted by Platform's Code Diff."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"file", "hunks"}),
+        optional=frozenset({"detail"}),
+    )
+    _validate_titled_detail(
+        payload,
+        title_field="file",
+        title_maximum=CODE_DIFF_MAX_FILE_UTF8_BYTES,
+        detail_maximum=CODE_DIFF_MAX_DETAIL_UTF8_BYTES,
+    )
+    hunks = _object_list(payload["hunks"], "hunks", minimum=1, maximum=CODE_DIFF_MAX_HUNKS)
+    total_lines = 0
+    for index, hunk in enumerate(hunks):
+        prefix = f"hunks[{index}]."
+        _require_exact_keys(
+            hunk,
+            required=frozenset({"lines"}),
+            optional=frozenset({"header"}),
+            prefix=prefix,
+        )
+        if "header" in hunk:
+            _bounded_text(
+                hunk["header"],
+                f"{prefix}header",
+                maximum=CODE_DIFF_MAX_HEADER_UTF8_BYTES,
+                nonempty=False,
+            )
+        lines = _object_list(
+            hunk["lines"], f"{prefix}lines", minimum=1, maximum=CODE_DIFF_MAX_LINES_PER_HUNK
+        )
+        total_lines += len(lines)
+        if total_lines > CODE_DIFF_MAX_TOTAL_LINES:
+            raise PartPayloadInvalid("hunks", "must contain at most 2000 lines in total")
+        for line_index, line in enumerate(lines):
+            line_prefix = f"{prefix}lines[{line_index}]."
+            _require_exact_keys(
+                line,
+                required=frozenset({"change", "text"}),
+                optional=frozenset(),
+                prefix=line_prefix,
+            )
+            if not isinstance(line["change"], str) or line["change"] not in CODE_DIFF_CHANGES:
+                raise PartPayloadInvalid(
+                    f"{line_prefix}change", "must be add, remove or context"
+                )
+            _bounded_text(
+                line["text"],
+                f"{line_prefix}text",
+                maximum=CODE_DIFF_MAX_TEXT_UTF8_BYTES,
+                nonempty=False,
+            )
+
+
+def _validate_file_tree(payload: Mapping[str, Any]) -> None:
+    """The exact bounded relative path tree mounted by Platform's File Tree."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "items"}),
+        optional=frozenset({"detail"}),
+    )
+    _validate_titled_detail(
+        payload,
+        title_field="title",
+        title_maximum=FILE_TREE_MAX_TITLE_UTF8_BYTES,
+        detail_maximum=FILE_TREE_MAX_DETAIL_UTF8_BYTES,
+    )
+    items = _object_list(payload["items"], "items", minimum=1, maximum=FILE_TREE_MAX_ITEMS)
+    kinds: dict[str, str] = {}
+    for index, candidate in enumerate(items):
+        prefix = f"items[{index}]."
+        _require_exact_keys(
+            candidate,
+            required=frozenset({"path", "name", "depth", "kind"}),
+            optional=frozenset({"additions", "deletions"}),
+            prefix=prefix,
+        )
+        path = _bounded_text(
+            candidate["path"],
+            f"{prefix}path",
+            maximum=FILE_TREE_MAX_PATH_UTF8_BYTES,
+            control_free=True,
+        )
+        segments = path.split("/")
+        if (
+            path.startswith("~")
+            or "\\" in path
+            or ":" in path
+            or any(segment in {"", ".", ".."} for segment in segments)
+        ):
+            raise PartPayloadInvalid(f"{prefix}path", "must be a normalised relative path")
+        if path in kinds:
+            raise PartPayloadInvalid(f"{prefix}path", "must be unique")
+        name = _bounded_text(
+            candidate["name"], f"{prefix}name", maximum=FILE_TREE_MAX_NAME_UTF8_BYTES
+        )
+        if name != segments[-1]:
+            raise PartPayloadInvalid(f"{prefix}name", "must equal the last path segment")
+        depth = _bounded_int(
+            candidate["depth"], f"{prefix}depth", minimum=0, maximum=FILE_TREE_MAX_DEPTH
+        )
+        if depth != len(segments) - 1:
+            raise PartPayloadInvalid(f"{prefix}depth", "must equal the path depth")
+        kind = candidate["kind"]
+        if not isinstance(kind, str) or kind not in FILE_TREE_KINDS:
+            raise PartPayloadInvalid(f"{prefix}kind", "must be folder or file")
+        for field in ("additions", "deletions"):
+            if field in candidate:
+                if kind != "file":
+                    raise PartPayloadInvalid(f"{prefix}{field}", "is allowed only on files")
+                _bounded_int(
+                    candidate[field],
+                    f"{prefix}{field}",
+                    minimum=0,
+                    maximum=FILE_TREE_MAX_COUNT,
+                )
+        if depth > 0 and kinds.get("/".join(segments[:-1])) != "folder":
+            raise PartPayloadInvalid(f"{prefix}path", "must follow its parent folder")
+        kinds[path] = kind
+
+
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
     """The exact one-table rich-prose subset emitted by the structured producer."""
     _require_exact_keys(payload, required=frozenset({"blocks"}), optional=frozenset())
@@ -1051,8 +1399,10 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     TEXT_PART_TYPE: _validate_text,
     ATTACHMENT_PART_TYPE: _validate_attachment,
     CHART_PART_TYPE: _validate_chart,
+    CODE_DIFF_PART_TYPE: _validate_code_diff,
     COMPARISON_MATRIX_PART_TYPE: _validate_comparison_matrix,
     DIAGRAM_FLOW_PART_TYPE: _validate_diagram_flow,
+    FILE_TREE_PART_TYPE: _validate_file_tree,
     REASONING_SUMMARY_PART_TYPE: _validate_reasoning_summary,
     TOOL_CALL_PART_TYPE: _validate_tool_call,
     WEB_SEARCH_PART_TYPE: _validate_web_search,
@@ -1062,6 +1412,8 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     METRIC_NUMBER_PART_TYPE: _validate_metric_number,
     MATH_STEPS_PART_TYPE: _validate_math_steps,
     SPEC_SHEET_PART_TYPE: _validate_spec_sheet,
+    SCORE_BREAKDOWN_PART_TYPE: _validate_score_breakdown,
+    TIMELINE_PART_TYPE: _validate_timeline,
 }
 
 #: The registered family names, for a caller that wants to report the registry

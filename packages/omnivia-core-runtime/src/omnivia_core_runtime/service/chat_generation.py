@@ -81,18 +81,26 @@ from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
+    CODE_DIFF_PART_TYPE,
+    CODE_DIFF_RESPONSE_SCHEMA_REF,
     COMPARISON_MATRIX_PART_TYPE,
     COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     DIAGRAM_FLOW_PART_TYPE,
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
+    FILE_TREE_PART_TYPE,
+    FILE_TREE_RESPONSE_SCHEMA_REF,
     MATH_STEPS_PART_TYPE,
     MATH_STEPS_RESPONSE_SCHEMA_REF,
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     RICH_PROSE_PART_TYPE,
+    SCORE_BREAKDOWN_PART_TYPE,
+    SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF,
     SPEC_SHEET_PART_TYPE,
     SPEC_SHEET_RESPONSE_SCHEMA_REF,
+    TIMELINE_PART_TYPE,
+    TIMELINE_RESPONSE_SCHEMA_REF,
     PartPayloadInvalid,
     validate_registered_payload,
 )
@@ -1626,6 +1634,10 @@ def append_provider_structured_output(
         MATH_STEPS_RESPONSE_SCHEMA_REF,
         NUMBER_TICKER_RESPONSE_SCHEMA_REF,
         SPEC_SHEET_RESPONSE_SCHEMA_REF,
+        TIMELINE_RESPONSE_SCHEMA_REF,
+        SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF,
+        CODE_DIFF_RESPONSE_SCHEMA_REF,
+        FILE_TREE_RESPONSE_SCHEMA_REF,
     }:
         raise UnsupportedProviderEvent(
             "provider event field 'schemaRef' is not an allow-listed structured schema"
@@ -1680,6 +1692,31 @@ def append_provider_structured_output(
         and normalized_output.get("detail") is None
     ):
         normalized_output.pop("detail", None)
+    # The four families below carry optional fields at the top level and inside
+    # their list entries; strip exactly those provider-edge nulls and no others.
+    nullable = {
+        TIMELINE_RESPONSE_SCHEMA_REF: (("detail",), "items", ("detail",)),
+        SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF: ((), "criteria", ("note",)),
+        CODE_DIFF_RESPONSE_SCHEMA_REF: (("detail",), "hunks", ("header",)),
+        FILE_TREE_RESPONSE_SCHEMA_REF: (("detail",), "items", ("additions", "deletions")),
+    }.get(schema_ref)
+    if nullable is not None:
+        top_fields, list_field, entry_fields = nullable
+        for optional_field in top_fields:
+            if optional_field in normalized_output and normalized_output[optional_field] is None:
+                del normalized_output[optional_field]
+        entries = normalized_output.get(list_field)
+        if isinstance(entries, list):
+            normalized_output[list_field] = [
+                {
+                    key: value
+                    for key, value in candidate.items()
+                    if key not in entry_fields or value is not None
+                }
+                if isinstance(candidate, Mapping)
+                else candidate
+                for candidate in entries
+            ]
     try:
         output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
@@ -1719,6 +1756,22 @@ def append_provider_structured_output(
         part_type = COMPARISON_MATRIX_PART_TYPE
         part_payload = normalized_output
         schema_label = "comparison-matrix"
+    elif schema_ref == TIMELINE_RESPONSE_SCHEMA_REF:
+        part_type = TIMELINE_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "timeline"
+    elif schema_ref == SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF:
+        part_type = SCORE_BREAKDOWN_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "score-breakdown"
+    elif schema_ref == CODE_DIFF_RESPONSE_SCHEMA_REF:
+        part_type = CODE_DIFF_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "code-diff"
+    elif schema_ref == FILE_TREE_RESPONSE_SCHEMA_REF:
+        part_type = FILE_TREE_PART_TYPE
+        part_payload = normalized_output
+        schema_label = "file-tree"
     else:
         part_type = SPEC_SHEET_PART_TYPE
         part_payload = normalized_output

@@ -21,13 +21,17 @@ from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_PART_TYPE,
     CHART_PART_TYPE,
+    CODE_DIFF_PART_TYPE,
     COMPARISON_MATRIX_PART_TYPE,
     DIAGRAM_FLOW_PART_TYPE,
+    FILE_TREE_PART_TYPE,
     MATH_STEPS_PART_TYPE,
     METRIC_NUMBER_PART_TYPE,
     PRESENTATION_ONLY_PART_TYPES,
     RICH_PROSE_PART_TYPE,
+    SCORE_BREAKDOWN_PART_TYPE,
     SPEC_SHEET_PART_TYPE,
+    TIMELINE_PART_TYPE,
     PartPayloadInvalid,
     validate_registered_payload,
 )
@@ -228,6 +232,27 @@ def _message_text_parts(
                 {
                     "kind": "text",
                     "text": "Comparison:\n" + to_canonical_json(dict(part.payload)),
+                }
+            )
+            continue
+        projected_label = {
+            TIMELINE_PART_TYPE: "Timeline",
+            SCORE_BREAKDOWN_PART_TYPE: "Score breakdown",
+            CODE_DIFF_PART_TYPE: "Code diff",
+            FILE_TREE_PART_TYPE: "File tree",
+        }.get(part.part_type)
+        if projected_label is not None:
+            try:
+                validate_registered_payload(part.part_type, part.payload)
+            except PartPayloadInvalid as error:
+                raise ChatCompactionConflict(
+                    "the selected chat lineage contains a malformed "
+                    + projected_label.lower()
+                ) from error
+            parts.append(
+                {
+                    "kind": "text",
+                    "text": projected_label + ":\n" + to_canonical_json(dict(part.payload)),
                 }
             )
             continue

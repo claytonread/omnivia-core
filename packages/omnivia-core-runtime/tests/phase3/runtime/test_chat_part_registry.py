@@ -27,11 +27,15 @@ from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
+    CODE_DIFF_PART_TYPE,
+    CODE_DIFF_RESPONSE_SCHEMA_REF,
     COMPARISON_MATRIX_PART_TYPE,
     COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     DIAGRAM_FLOW_PART_TYPE,
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
+    FILE_TREE_PART_TYPE,
+    FILE_TREE_RESPONSE_SCHEMA_REF,
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
@@ -44,9 +48,13 @@ from omnivia_core_runtime.service.chat_part_registry import (
     REGISTERED_PART_TYPES,
     RESPONSE_FORMAT_PART_TYPE,
     RICH_PROSE_PART_TYPE,
+    SCORE_BREAKDOWN_PART_TYPE,
+    SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF,
     SPEC_SHEET_PART_TYPE,
     SPEC_SHEET_RESPONSE_SCHEMA_REF,
     TEXT_PART_TYPE,
+    TIMELINE_PART_TYPE,
+    TIMELINE_RESPONSE_SCHEMA_REF,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
     PartPayloadInvalid,
@@ -88,20 +96,28 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   math.steps  validated structured-math derivation materialised by the executor
     #   spec.sheet  validated text-only specification sheet materialised by the executor
     #   comparison.matrix validated option-by-trait matrix materialised by the executor
+    #   timeline    validated past/now/future event sequence materialised by the executor
+    #   score.breakdown validated weighted criterion score materialised by the executor
+    #   code.diff   validated single-file line diff materialised by the executor
+    #   file.tree   validated relative path tree materialised by the executor
     assert REGISTERED_PART_TYPES == (
         ACTIVITY_SERIES_PART_TYPE,
         ATTACHMENT_PART_TYPE,
         CHART_PART_TYPE,
+        CODE_DIFF_PART_TYPE,
         COMPARISON_MATRIX_PART_TYPE,
         DIAGRAM_FLOW_PART_TYPE,
+        FILE_TREE_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
         MATH_STEPS_PART_TYPE,
         METRIC_NUMBER_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
         RESPONSE_FORMAT_PART_TYPE,
         RICH_PROSE_PART_TYPE,
+        SCORE_BREAKDOWN_PART_TYPE,
         SPEC_SHEET_PART_TYPE,
         TEXT_PART_TYPE,
+        TIMELINE_PART_TYPE,
         TOOL_CALL_PART_TYPE,
         WEB_SEARCH_PART_TYPE,
     )
@@ -120,6 +136,10 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     assert is_registered_part_type(ACTIVITY_SERIES_PART_TYPE)
     assert is_registered_part_type(MATH_STEPS_PART_TYPE)
     assert is_registered_part_type(SPEC_SHEET_PART_TYPE)
+    assert is_registered_part_type(TIMELINE_PART_TYPE)
+    assert is_registered_part_type(SCORE_BREAKDOWN_PART_TYPE)
+    assert is_registered_part_type(CODE_DIFF_PART_TYPE)
+    assert is_registered_part_type(FILE_TREE_PART_TYPE)
     # Adding a family does NOT bump the version: a consumer that has never seen
     # it decodes it to the contract's inert fallback, which is the defined
     # behaviour for an unrecognised type and needs no negotiation.
@@ -246,6 +266,13 @@ def test_response_format_is_one_exact_allow_listed_internal_directive() -> None:
         RESPONSE_FORMAT_PART_TYPE,
         {"schemaRef": COMPARISON_MATRIX_RESPONSE_SCHEMA_REF},
     )
+    for schema_ref in (
+        TIMELINE_RESPONSE_SCHEMA_REF,
+        SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF,
+        CODE_DIFF_RESPONSE_SCHEMA_REF,
+        FILE_TREE_RESPONSE_SCHEMA_REF,
+    ):
+        validate_registered_payload(RESPONSE_FORMAT_PART_TYPE, {"schemaRef": schema_ref})
     for bad, field in (
         ({}, "schemaRef"),
         ({"schemaRef": "arbitrary.schema"}, "schemaRef"),
@@ -552,6 +579,176 @@ def test_comparison_matrix_is_exact_bounded_and_rectangular() -> None:
         with pytest.raises(PartPayloadInvalid) as refused:
             validate_registered_payload(COMPARISON_MATRIX_PART_TYPE, bad)
         assert refused.value.field == field
+
+
+def _refused(part_type: str, valid: dict[str, Any], cases: Any) -> None:
+    validate_registered_payload(part_type, valid)
+    for bad, field in cases:
+        with pytest.raises(PartPayloadInvalid) as refused:
+            validate_registered_payload(part_type, bad)
+        assert refused.value.field == field, (bad, refused.value)
+
+
+def test_timeline_is_exact_bounded_and_state_closed() -> None:
+    item = {"label": "GA", "value": "2026-10-01", "state": "now"}
+    valid = {
+        "title": "Release",
+        "detail": "Quarter plan",
+        "items": [
+            {"label": "Beta", "value": "September", "state": "past", "detail": ""},
+            item,
+            {"label": "LTS", "value": "2027", "state": "future"},
+        ],
+    }
+    _refused(
+        TIMELINE_PART_TYPE,
+        valid,
+        (
+            ({**valid, "title": ""}, "title"),
+            ({**valid, "title": "é" * 129}, "title"),
+            ({**valid, "title": None}, "title"),
+            ({**valid, "detail": "é" * 2_049}, "detail"),
+            ({**valid, "detail": 1}, "detail"),
+            ({**valid, "items": []}, "items"),
+            ({**valid, "items": [item] * 65}, "items"),
+            ({**valid, "items": ["GA"]}, "items[0]"),
+            ({**valid, "items": [{**item, "label": ""}]}, "items[0].label"),
+            ({**valid, "items": [{**item, "value": "é" * 129}]}, "items[0].value"),
+            ({**valid, "items": [{**item, "state": "later"}]}, "items[0].state"),
+            ({**valid, "items": [{**item, "state": ["now"]}]}, "items[0].state"),
+            ({**valid, "items": [{**item, "detail": None}]}, "items[0].detail"),
+            ({**valid, "items": [{**item, "detail": "é" * 2_049}]}, "items[0].detail"),
+            ({**valid, "items": [{"label": "GA", "value": "Now"}]}, "items[0].state"),
+            ({**valid, "items": [{**item, "icon": "x"}]}, "items[0].icon"),
+            ({**valid, "kind": "vertical"}, "kind"),
+        ),
+    )
+
+
+def test_score_breakdown_is_exact_weighted_and_consistent() -> None:
+    fit = {"label": "Fit", "score": 8, "weightBps": 5_000, "note": "Covers the core"}
+    cost = {"label": "Cost", "score": 7, "weightBps": 5_000}
+    valid = {"verdict": "Strong fit", "total": 7.5, "outOf": 10, "criteria": [fit, cost]}
+    _refused(
+        SCORE_BREAKDOWN_PART_TYPE,
+        valid,
+        (
+            ({**valid, "verdict": ""}, "verdict"),
+            ({**valid, "verdict": " Strong"}, "verdict"),
+            ({**valid, "verdict": "a\x01b"}, "verdict"),
+            ({**valid, "verdict": "é" * 129}, "verdict"),
+            ({**valid, "outOf": 0}, "outOf"),
+            ({**valid, "outOf": True}, "outOf"),
+            ({**valid, "outOf": 1_000_001}, "outOf"),
+            ({**valid, "outOf": float("inf")}, "outOf"),
+            ({**valid, "total": -0.0}, "total"),
+            ({**valid, "total": True}, "total"),
+            ({**valid, "total": 10.5}, "total"),
+            ({**valid, "total": 7.4}, "total"),
+            ({**valid, "criteria": []}, "criteria"),
+            ({**valid, "criteria": [cost] * 17}, "criteria"),
+            ({**valid, "criteria": [fit, {**cost, "label": "Fit"}]}, "criteria[1].label"),
+            ({**valid, "criteria": [fit, {**cost, "label": "Cost "}]}, "criteria[1].label"),
+            ({**valid, "criteria": [{**fit, "note": ""}, cost]}, "criteria[0].note"),
+            ({**valid, "criteria": [{**fit, "note": "a\x7f"}, cost]}, "criteria[0].note"),
+            ({**valid, "criteria": [{**fit, "note": " a"}, cost]}, "criteria[0].note"),
+            ({**valid, "criteria": [{**fit, "note": "é" * 513}, cost]}, "criteria[0].note"),
+            ({**valid, "criteria": [{**fit, "note": None}, cost]}, "criteria[0].note"),
+            ({**valid, "criteria": [{**fit, "score": 11}, cost]}, "criteria[0].score"),
+            ({**valid, "criteria": [{**fit, "score": -0.0}, cost]}, "criteria[0].score"),
+            ({**valid, "criteria": [{**fit, "score": False}, cost]}, "criteria[0].score"),
+            ({**valid, "criteria": [{**fit, "weightBps": 0}, cost]}, "criteria[0].weightBps"),
+            ({**valid, "criteria": [{**fit, "weightBps": 5_000.0}, cost]}, "criteria[0].weightBps"),
+            ({**valid, "criteria": [{**fit, "weightBps": True}, cost]}, "criteria[0].weightBps"),
+            ({**valid, "criteria": [{**fit, "weightBps": 4_999}, cost]}, "criteria"),
+            ({**valid, "criteria": [{**fit, "weight": 1}, cost]}, "criteria[0].weight"),
+            ({**valid, "rank": 1}, "rank"),
+        ),
+    )
+
+
+def test_code_diff_is_exact_bounded_and_change_closed() -> None:
+    line = {"change": "add", "text": "x = 2"}
+    hunk = {"header": "@@ -1 +1 @@", "lines": [{"change": "context", "text": ""}, line]}
+    valid = {"file": "src/app.py", "detail": "Fix", "hunks": [hunk, {"lines": [line]}]}
+    _refused(
+        CODE_DIFF_PART_TYPE,
+        valid,
+        (
+            ({**valid, "file": ""}, "file"),
+            ({**valid, "file": "é" * 513}, "file"),
+            ({**valid, "detail": 1}, "detail"),
+            ({**valid, "detail": "é" * 2_049}, "detail"),
+            ({**valid, "hunks": []}, "hunks"),
+            ({**valid, "hunks": [hunk] * 65}, "hunks"),
+            ({**valid, "hunks": [{**hunk, "header": None}]}, "hunks[0].header"),
+            ({**valid, "hunks": [{**hunk, "header": "é" * 513}]}, "hunks[0].header"),
+            ({**valid, "hunks": [{**hunk, "start": 1}]}, "hunks[0].start"),
+            ({**valid, "hunks": [{"lines": []}]}, "hunks[0].lines"),
+            ({**valid, "hunks": [{"lines": [line] * 501}]}, "hunks[0].lines"),
+            ({**valid, "hunks": [{"lines": [line] * 401}] * 5}, "hunks"),
+            ({**valid, "hunks": [{"lines": [{**line, "change": "modify"}]}]}, "hunks[0].lines[0].change"),
+            ({**valid, "hunks": [{"lines": [{**line, "text": 1}]}]}, "hunks[0].lines[0].text"),
+            ({**valid, "hunks": [{"lines": [{**line, "text": "é" * 2_049}]}]}, "hunks[0].lines[0].text"),
+            ({**valid, "hunks": [{"lines": [{**line, "number": 3}]}]}, "hunks[0].lines[0].number"),
+            ({**valid, "language": "python"}, "language"),
+        ),
+    )
+
+
+def test_file_tree_is_exact_relative_and_parent_ordered() -> None:
+    folder = {"path": "src", "name": "src", "depth": 0, "kind": "folder"}
+    child = {"path": "src/app.py", "name": "app.py", "depth": 1, "kind": "file"}
+    valid = {
+        "title": "Changes",
+        "detail": "Two files",
+        "items": [
+            folder,
+            {**child, "additions": 3, "deletions": 0},
+            {"path": "README.md", "name": "README.md", "depth": 0, "kind": "file"},
+        ],
+    }
+
+    def path(value: str) -> dict[str, Any]:
+        name = value.split("/")[-1]
+        return {**valid, "items": [{**child, "path": value, "name": name, "depth": 0}]}
+
+    _refused(
+        FILE_TREE_PART_TYPE,
+        valid,
+        (
+            ({**valid, "title": ""}, "title"),
+            ({**valid, "title": "é" * 129}, "title"),
+            ({**valid, "detail": "é" * 2_049}, "detail"),
+            ({**valid, "items": []}, "items"),
+            ({**valid, "items": [folder] * 257}, "items"),
+            (path(""), "items[0].path"),
+            (path("~x"), "items[0].path"),
+            (path("a\\b"), "items[0].path"),
+            (path("C:x"), "items[0].path"),
+            (path("a\x00b"), "items[0].path"),
+            (path("é" * 513), "items[0].path"),
+            (path("/a"), "items[0].path"),
+            (path("a//b"), "items[0].path"),
+            (path("./a"), "items[0].path"),
+            (path("a/.."), "items[0].path"),
+            ({**valid, "items": [folder, folder]}, "items[1].path"),
+            ({**valid, "items": [folder, {**child, "name": "other.py"}]}, "items[1].name"),
+            ({**valid, "items": [folder, {**child, "depth": 0}]}, "items[1].depth"),
+            ({**valid, "items": [folder, {**child, "depth": True}]}, "items[1].depth"),
+            ({**valid, "items": [{**folder, "depth": 9}]}, "items[0].depth"),
+            ({**valid, "items": [{**folder, "kind": "dir"}]}, "items[0].kind"),
+            ({**valid, "items": [{**folder, "additions": 1}]}, "items[0].additions"),
+            ({**valid, "items": [folder, {**child, "deletions": -1}]}, "items[1].deletions"),
+            ({**valid, "items": [folder, {**child, "additions": True}]}, "items[1].additions"),
+            ({**valid, "items": [folder, {**child, "additions": 1_000_001}]}, "items[1].additions"),
+            ({**valid, "items": [folder, {**child, "additions": None}]}, "items[1].additions"),
+            ({**valid, "items": [child, folder]}, "items[0].path"),
+            ({**valid, "items": [{**folder, "kind": "file"}, child]}, "items[1].path"),
+            ({**valid, "items": [{**folder, "status": "added"}]}, "items[0].status"),
+            ({**valid, "root": "/"}, "root"),
+        ),
+    )
 
 
 def test_rich_prose_table_is_exact_bounded_and_rectangular() -> None:

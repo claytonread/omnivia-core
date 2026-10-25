@@ -68,11 +68,15 @@ from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
+    CODE_DIFF_PART_TYPE,
+    CODE_DIFF_RESPONSE_SCHEMA_REF,
     COMPARISON_MATRIX_PART_TYPE,
     COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     DIAGRAM_FLOW_PART_TYPE,
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
+    FILE_TREE_PART_TYPE,
+    FILE_TREE_RESPONSE_SCHEMA_REF,
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
@@ -84,8 +88,12 @@ from omnivia_core_runtime.service.chat_part_registry import (
     REASONING_SUMMARY_PART_TYPE,
     RESPONSE_FORMAT_PART_TYPE,
     RICH_PROSE_PART_TYPE,
+    SCORE_BREAKDOWN_PART_TYPE,
+    SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF,
     SPEC_SHEET_PART_TYPE,
     SPEC_SHEET_RESPONSE_SCHEMA_REF,
+    TIMELINE_PART_TYPE,
+    TIMELINE_RESPONSE_SCHEMA_REF,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
     PartPayloadInvalid,
@@ -330,6 +338,50 @@ def _comparison_matrix_provider_text(payload: Mapping[str, Any]) -> str:
     return "Comparison:\n" + to_canonical_json(dict(payload))
 
 
+def _timeline_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed timeline."""
+    try:
+        validate_registered_payload(TIMELINE_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed timeline"
+        ) from error
+    return "Timeline:\n" + to_canonical_json(dict(payload))
+
+
+def _score_breakdown_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed score breakdown."""
+    try:
+        validate_registered_payload(SCORE_BREAKDOWN_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed score breakdown"
+        ) from error
+    return "Score breakdown:\n" + to_canonical_json(dict(payload))
+
+
+def _code_diff_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed code diff."""
+    try:
+        validate_registered_payload(CODE_DIFF_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed code diff"
+        ) from error
+    return "Code diff:\n" + to_canonical_json(dict(payload))
+
+
+def _file_tree_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one committed file tree."""
+    try:
+        validate_registered_payload(FILE_TREE_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed file tree"
+        ) from error
+    return "File tree:\n" + to_canonical_json(dict(payload))
+
+
 def _trigger_response_format(
     connection: sqlite3.Connection,
     *,
@@ -465,6 +517,22 @@ def _provider_context(
             elif part.part_type == COMPARISON_MATRIX_PART_TYPE:
                 provider_parts.append(
                     {"kind": "text", "text": _comparison_matrix_provider_text(part.payload)}
+                )
+            elif part.part_type == TIMELINE_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _timeline_provider_text(part.payload)}
+                )
+            elif part.part_type == SCORE_BREAKDOWN_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _score_breakdown_provider_text(part.payload)}
+                )
+            elif part.part_type == CODE_DIFF_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _code_diff_provider_text(part.payload)}
+                )
+            elif part.part_type == FILE_TREE_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _file_tree_provider_text(part.payload)}
                 )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None
@@ -866,6 +934,18 @@ def structured_output_message_part(
         payload = dict(output.output)
     elif output.schema_ref == COMPARISON_MATRIX_RESPONSE_SCHEMA_REF:
         part_type = COMPARISON_MATRIX_PART_TYPE
+        payload = dict(output.output)
+    elif output.schema_ref == TIMELINE_RESPONSE_SCHEMA_REF:
+        part_type = TIMELINE_PART_TYPE
+        payload = dict(output.output)
+    elif output.schema_ref == SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF:
+        part_type = SCORE_BREAKDOWN_PART_TYPE
+        payload = dict(output.output)
+    elif output.schema_ref == CODE_DIFF_RESPONSE_SCHEMA_REF:
+        part_type = CODE_DIFF_PART_TYPE
+        payload = dict(output.output)
+    elif output.schema_ref == FILE_TREE_RESPONSE_SCHEMA_REF:
+        part_type = FILE_TREE_PART_TYPE
         payload = dict(output.output)
     elif output.schema_ref == DATA_TABLE_RESPONSE_SCHEMA_REF:
         part_type = RICH_PROSE_PART_TYPE
