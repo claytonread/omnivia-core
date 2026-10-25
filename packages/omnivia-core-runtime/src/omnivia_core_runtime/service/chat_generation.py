@@ -1667,6 +1667,17 @@ def append_provider_structured_output(
         and normalized_output["unit"] is None
     ):
         del normalized_output["unit"]
+    # An activity series' total is the sum of its daily counts, a derived fact
+    # the fixed provider schema no longer asks the model to add up.
+    if schema_ref == ACTIVITY_SERIES_RESPONSE_SCHEMA_REF and "total" not in normalized_output:
+        points = normalized_output.get("points")
+        if isinstance(points, list) and all(
+            isinstance(candidate, Mapping)
+            and isinstance(candidate.get("count"), int)
+            and not isinstance(candidate.get("count"), bool)
+            for candidate in points
+        ):
+            normalized_output["total"] = sum(candidate["count"] for candidate in points)
     if schema_ref == MATH_STEPS_RESPONSE_SCHEMA_REF:
         if normalized_output.get("label") is None:
             normalized_output.pop("label", None)

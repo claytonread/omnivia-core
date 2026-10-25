@@ -172,6 +172,17 @@ def test_provider_null_unit_is_removed_before_activity_persistence(
     assert dict(_parts(seeded)[0].payload) == expected
 
 
+def test_provider_omitted_total_is_derived_from_the_daily_counts(
+    seeded: m1.Owned,
+) -> None:
+    output = {key: value for key, value in ACTIVITY.items() if key != "total"}
+    run(seeded, Scripted(activity_stream(output)))
+
+    assert status(seeded).state == "succeeded"
+    assert dict(_outputs(seeded)[0].output) == ACTIVITY
+    assert dict(_parts(seeded)[0].payload) == ACTIVITY
+
+
 def test_crash_replay_reuses_the_same_activity_output_row(seeded: m1.Owned) -> None:
     def dies(*args: Any, **kwargs: Any) -> Any:
         raise Crash
