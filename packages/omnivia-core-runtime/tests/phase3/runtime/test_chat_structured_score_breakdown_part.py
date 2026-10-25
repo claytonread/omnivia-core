@@ -186,6 +186,28 @@ def test_provider_null_notes_are_removed_before_score_breakdown_persistence(
     assert dict(_parts(seeded)[0].payload) == expected
 
 
+def test_provider_omitted_total_is_derived_from_the_weighted_criteria(
+    seeded: m1.Owned,
+) -> None:
+    criteria = [
+        {"label": "Simplicity", "score": 8, "weightBps": 5_000},
+        {"label": "Concurrency", "score": 6, "weightBps": 3_000},
+        {"label": "Portability", "score": 9, "weightBps": 2_000},
+    ]
+    output = {"verdict": "Good fit", "outOf": 10, "criteria": criteria}
+    run(seeded, Scripted(score_breakdown_stream(output)))
+
+    assert status(seeded).state == "succeeded"
+    # Same order as Platform's decoder, so the persisted float re-checks exactly.
+    weighted = 0.0
+    for criterion in criteria:
+        weighted += criterion["score"] * criterion["weightBps"] / 10_000
+    expected = {"verdict": "Good fit", "total": weighted, "outOf": 10, "criteria": criteria}
+    assert dict(_outputs(seeded)[0].output) == expected
+    assert dict(_parts(seeded)[0].payload) == expected
+    assert abs(weighted - 7.6) < 1e-12
+
+
 def test_crash_replay_reuses_the_same_score_breakdown_output_row(seeded: m1.Owned) -> None:
     def dies(*args: Any, **kwargs: Any) -> Any:
         raise Crash

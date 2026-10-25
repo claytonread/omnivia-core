@@ -1717,6 +1717,23 @@ def append_provider_structured_output(
                 else candidate
                 for candidate in entries
             ]
+    # A score breakdown's total is a derived fact: the weighted criterion score.
+    # The fixed provider schema does not ask the model for arithmetic; Core
+    # computes it here in the same order Platform's decoder re-checks it.
+    if schema_ref == SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF and "total" not in normalized_output:
+        criteria = normalized_output.get("criteria")
+        if isinstance(criteria, list) and all(
+            isinstance(candidate, Mapping)
+            and isinstance(candidate.get("score"), (int, float))
+            and not isinstance(candidate.get("score"), bool)
+            and isinstance(candidate.get("weightBps"), int)
+            and not isinstance(candidate.get("weightBps"), bool)
+            for candidate in criteria
+        ):
+            weighted_total = 0.0
+            for candidate in criteria:
+                weighted_total += candidate["score"] * candidate["weightBps"] / 10_000
+            normalized_output["total"] = weighted_total
     try:
         output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
