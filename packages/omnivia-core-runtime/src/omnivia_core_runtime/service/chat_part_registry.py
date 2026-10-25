@@ -55,6 +55,9 @@ produces it. The families below are written by Core today:
   validated structured code-diff response producer.
 * `file.tree` -- `service/chat_generation_executor.py`, from only the
   validated structured file-tree response producer.
+* `server.panel` -- `service/chat_submit.py`, on the user's turn, from only the
+  App Shell's read-only Dev MCP observation (`initialize` and `tools/list`; no
+  tool is ever called). At most one per submission.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -113,6 +116,7 @@ __all__ = [
     "RICH_PROSE_PART_TYPE",
     "SCORE_BREAKDOWN_PART_TYPE",
     "SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF",
+    "SERVER_PANEL_PART_TYPE",
     "SPEC_SHEET_PART_TYPE",
     "SPEC_SHEET_RESPONSE_SCHEMA_REF",
     "TEXT_PART_TYPE",
@@ -216,6 +220,9 @@ CODE_DIFF_PART_TYPE: Final = "code.diff"
 #: One exact bounded relative path tree, parents before children.
 FILE_TREE_PART_TYPE: Final = "file.tree"
 
+#: One exact bounded MCP server status observed read-only by the App Shell.
+SERVER_PANEL_PART_TYPE: Final = "server.panel"
+
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
 DATA_TABLE_MAX_COLUMN_UTF8_BYTES: Final = 256
@@ -283,6 +290,27 @@ FILE_TREE_MAX_PATH_UTF8_BYTES: Final = 1_024
 FILE_TREE_MAX_NAME_UTF8_BYTES: Final = 256
 FILE_TREE_MAX_COUNT: Final = 1_000_000
 FILE_TREE_KINDS: Final = frozenset({"folder", "file"})
+SERVER_PANEL_MAX_SERVERS: Final = 32
+SERVER_PANEL_MAX_TOOLS_PER_SERVER: Final = 64
+SERVER_PANEL_MAX_TEXT_UTF8_BYTES: Final = 256
+SERVER_PANEL_MAX_DETAIL_UTF8_BYTES: Final = 512
+SERVER_PANEL_MAX_TOTAL_UTF8_BYTES: Final = 65_536
+#: The closed display states Platform's MCP projection maps to a server status.
+SERVER_PANEL_STATES: Final = frozenset(
+    {
+        "queued",
+        "loading",
+        "streaming",
+        "partial",
+        "complete",
+        "stopped",
+        "failed",
+        "stale",
+        "permission",
+        "unavailable",
+        "waiting",
+    }
+)
 _WORKSPACE_SCOPED_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 #: Exact Core-authored families that are transcript presentation, not F2a
@@ -1342,6 +1370,50 @@ def _validate_file_tree(payload: Mapping[str, Any]) -> None:
         kinds[path] = kind
 
 
+def _panel_text(value: Any, field: str, maximum: int) -> int:
+    """Non-empty, trimmed, control-free text; returns its UTF-8 byte length."""
+    text = _bounded_text(value, field, maximum=maximum, control_free=True, trimmed=True)
+    return len(text.encode("utf-8"))
+
+
+def _validate_server_panel(payload: Mapping[str, Any]) -> None:
+    """The exact MCP server status Platform's MCP Server Panel projection admits."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "items"}),
+        optional=frozenset({"detail", "state"}),
+    )
+    total = _panel_text(payload["title"], "title", SERVER_PANEL_MAX_TEXT_UTF8_BYTES)
+    if "detail" in payload:
+        total += _panel_text(payload["detail"], "detail", SERVER_PANEL_MAX_DETAIL_UTF8_BYTES)
+    if "state" in payload and payload["state"] not in SERVER_PANEL_STATES:
+        raise PartPayloadInvalid("state", "is not a display state")
+    items = _object_list(payload["items"], "items", minimum=0, maximum=SERVER_PANEL_MAX_SERVERS)
+    for index, server in enumerate(items):
+        prefix = f"items[{index}]."
+        _require_exact_keys(
+            server,
+            required=frozenset({"label", "detail", "state", "values"}),
+            optional=frozenset(),
+            prefix=prefix,
+        )
+        total += _panel_text(server["label"], f"{prefix}label", SERVER_PANEL_MAX_TEXT_UTF8_BYTES)
+        total += _panel_text(server["detail"], f"{prefix}detail", SERVER_PANEL_MAX_TEXT_UTF8_BYTES)
+        if not isinstance(server["state"], str) or server["state"] not in SERVER_PANEL_STATES:
+            raise PartPayloadInvalid(f"{prefix}state", "is not a display state")
+        tools = server["values"]
+        if not isinstance(tools, list) or len(tools) > SERVER_PANEL_MAX_TOOLS_PER_SERVER:
+            raise PartPayloadInvalid(f"{prefix}values", "must contain at most 64 tool names")
+        seen: set[str] = set()
+        for tool_index, tool in enumerate(tools):
+            total += _panel_text(tool, f"{prefix}values[{tool_index}]", SERVER_PANEL_MAX_TEXT_UTF8_BYTES)
+            if tool in seen:
+                raise PartPayloadInvalid(f"{prefix}values[{tool_index}]", "must be unique")
+            seen.add(tool)
+        if total > SERVER_PANEL_MAX_TOTAL_UTF8_BYTES:
+            raise PartPayloadInvalid("items", "must total at most 65536 UTF-8 bytes")
+
+
 def _validate_rich_prose_table(payload: Mapping[str, Any]) -> None:
     """The exact one-table rich-prose subset emitted by the structured producer."""
     _require_exact_keys(payload, required=frozenset({"blocks"}), optional=frozenset())
@@ -1413,6 +1485,7 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     MATH_STEPS_PART_TYPE: _validate_math_steps,
     SPEC_SHEET_PART_TYPE: _validate_spec_sheet,
     SCORE_BREAKDOWN_PART_TYPE: _validate_score_breakdown,
+    SERVER_PANEL_PART_TYPE: _validate_server_panel,
     TIMELINE_PART_TYPE: _validate_timeline,
 }
 

@@ -117,6 +117,7 @@ from omnivia_core_runtime.service.chat_command import ChatAggregateConflict, Cha
 from omnivia_core_runtime.service.chat_interactions import read_chat_wait
 from omnivia_core_runtime.service.chat_part_registry import (
     RESPONSE_FORMAT_PART_TYPE,
+    SERVER_PANEL_PART_TYPE,
     PartPayloadInvalid,
     validate_registered_payload,
 )
@@ -826,11 +827,17 @@ def _part(item: object, index: int) -> tuple[_Part, str]:
 
 
 def _validate_response_format_directives(parts: Sequence[_Part]) -> None:
-    """A submission names at most one internal response-format directive."""
+    """A submission names at most one internal response-format directive and
+    attaches at most one observed MCP server status."""
     if sum(part.part_type == RESPONSE_FORMAT_PART_TYPE for part in parts) > 1:
         raise _invalid(
             "editableParts",
             "contains more than one response-format directive",
+        )
+    if sum(part.part_type == SERVER_PANEL_PART_TYPE for part in parts) > 1:
+        raise _invalid(
+            "editableParts",
+            "contains more than one MCP server status",
         )
 
 

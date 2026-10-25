@@ -30,6 +30,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     PRESENTATION_ONLY_PART_TYPES,
     RICH_PROSE_PART_TYPE,
     SCORE_BREAKDOWN_PART_TYPE,
+    SERVER_PANEL_PART_TYPE,
     SPEC_SHEET_PART_TYPE,
     TIMELINE_PART_TYPE,
     PartPayloadInvalid,
@@ -240,6 +241,7 @@ def _message_text_parts(
             SCORE_BREAKDOWN_PART_TYPE: "Score breakdown",
             CODE_DIFF_PART_TYPE: "Code diff",
             FILE_TREE_PART_TYPE: "File tree",
+            SERVER_PANEL_PART_TYPE: "MCP server status (observed read-only by the App Shell)",
         }.get(part.part_type)
         if projected_label is not None:
             try:

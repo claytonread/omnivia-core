@@ -90,6 +90,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     RICH_PROSE_PART_TYPE,
     SCORE_BREAKDOWN_PART_TYPE,
     SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF,
+    SERVER_PANEL_PART_TYPE,
     SPEC_SHEET_PART_TYPE,
     SPEC_SHEET_RESPONSE_SCHEMA_REF,
     TIMELINE_PART_TYPE,
@@ -382,6 +383,19 @@ def _file_tree_provider_text(payload: Mapping[str, Any]) -> str:
     return "File tree:\n" + to_canonical_json(dict(payload))
 
 
+def _server_panel_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one observed MCP server status."""
+    try:
+        validate_registered_payload(SERVER_PANEL_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError(
+            "the conversation contains a malformed MCP server status"
+        ) from error
+    return "MCP server status (observed read-only by the App Shell):\n" + to_canonical_json(
+        dict(payload)
+    )
+
+
 def _trigger_response_format(
     connection: sqlite3.Connection,
     *,
@@ -533,6 +547,10 @@ def _provider_context(
             elif part.part_type == FILE_TREE_PART_TYPE:
                 provider_parts.append(
                     {"kind": "text", "text": _file_tree_provider_text(part.payload)}
+                )
+            elif part.part_type == SERVER_PANEL_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _server_panel_provider_text(part.payload)}
                 )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None

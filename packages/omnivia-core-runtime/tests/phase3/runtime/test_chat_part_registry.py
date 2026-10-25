@@ -50,6 +50,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     RICH_PROSE_PART_TYPE,
     SCORE_BREAKDOWN_PART_TYPE,
     SCORE_BREAKDOWN_RESPONSE_SCHEMA_REF,
+    SERVER_PANEL_PART_TYPE,
     SPEC_SHEET_PART_TYPE,
     SPEC_SHEET_RESPONSE_SCHEMA_REF,
     TEXT_PART_TYPE,
@@ -100,6 +101,8 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   score.breakdown validated weighted criterion score materialised by the executor
     #   code.diff   validated single-file line diff materialised by the executor
     #   file.tree   validated relative path tree materialised by the executor
+    #   server.panel  `chat_submit`, on the user's turn, from only the App Shell's
+    #               read-only Dev MCP observation (initialize and tools/list)
     assert REGISTERED_PART_TYPES == (
         ACTIVITY_SERIES_PART_TYPE,
         ATTACHMENT_PART_TYPE,
@@ -115,6 +118,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
         RESPONSE_FORMAT_PART_TYPE,
         RICH_PROSE_PART_TYPE,
         SCORE_BREAKDOWN_PART_TYPE,
+        SERVER_PANEL_PART_TYPE,
         SPEC_SHEET_PART_TYPE,
         TEXT_PART_TYPE,
         TIMELINE_PART_TYPE,

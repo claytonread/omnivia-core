@@ -1877,6 +1877,91 @@ def test_gb01_submit_refuses_invalid_response_format_directives_before_writing(
     assert _counts(seeded) == before
 
 
+SERVER_PANEL = {
+    "title": "Dev MCP server",
+    "detail": "Observed read-only with initialize and tools/list.",
+    "items": [
+        {
+            "label": "omnivia-memory",
+            "detail": "stdio · omnivia-dev-mcp",
+            "state": "complete",
+            "values": ["memory_store", "memory_list"],
+        }
+    ],
+}
+
+
+def test_submit_persists_one_observed_mcp_server_status_on_the_user_turn(
+    seeded: m1.Owned,
+) -> None:
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(
+                editable_parts=(
+                    {"type": "text", "payload": {"text": "Show the Dev MCP server"}},
+                    {"type": "server.panel", "payload": SERVER_PANEL},
+                )
+            )
+        )
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+    parts = chat.read_message_parts(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        message_id="msg-gb01-submitted",
+    )
+    assert [(part.part_type, part.visibility, dict(part.payload)) for part in parts] == [
+        ("text", "standard", {"text": "Show the Dev MCP server"}),
+        ("server.panel", "standard", SERVER_PANEL),
+    ]
+
+
+@pytest.mark.parametrize(
+    "editable_parts",
+    (
+        ({"type": "server.panel", "payload": {**SERVER_PANEL, "command": "rm"}},),
+        ({"type": "server.panel", "payload": {**SERVER_PANEL, "title": " Dev"}},),
+        (
+            {
+                "type": "server.panel",
+                "payload": {
+                    **SERVER_PANEL,
+                    "items": [{**SERVER_PANEL["items"][0], "state": "connected"}],  # type: ignore[index]
+                },
+            },
+        ),
+        (
+            {
+                "type": "server.panel",
+                "payload": {
+                    **SERVER_PANEL,
+                    "items": [{**SERVER_PANEL["items"][0], "values": ["a", "a"]}],  # type: ignore[index]
+                },
+            },
+        ),
+        (
+            {"type": "server.panel", "payload": SERVER_PANEL},
+            {"type": "server.panel", "payload": SERVER_PANEL},
+        ),
+    ),
+)
+def test_submit_refuses_malformed_or_repeated_mcp_server_status_before_writing(
+    seeded: m1.Owned,
+    editable_parts: tuple[Mapping[str, Any], ...],
+) -> None:
+    before = _counts(seeded)
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(editable_parts=editable_parts),
+            idempotency_key="idem-bad-server-panel",
+            request_id="req-bad-server-panel",
+        )
+    )
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+    assert _counts(seeded) == before
+
+
 def test_gb01_workspace_mismatch_refuses_before_any_durable_write(
     seeded: m1.Owned,
 ) -> None:
