@@ -25,6 +25,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     COMPARISON_MATRIX_PART_TYPE,
     DIAGRAM_FLOW_PART_TYPE,
     FILE_TREE_PART_TYPE,
+    GENERATIVE_UI_PART_TYPE,
     MATH_STEPS_PART_TYPE,
     METRIC_NUMBER_PART_TYPE,
     PRESENTATION_ONLY_PART_TYPES,
@@ -242,6 +243,7 @@ def _message_text_parts(
             CODE_DIFF_PART_TYPE: "Code diff",
             FILE_TREE_PART_TYPE: "File tree",
             SERVER_PANEL_PART_TYPE: "MCP server status (observed read-only by the App Shell)",
+            GENERATIVE_UI_PART_TYPE: "OmniVia Core report (computed by Core from this workspace's own chat records)",
         }.get(part.part_type)
         if projected_label is not None:
             try:

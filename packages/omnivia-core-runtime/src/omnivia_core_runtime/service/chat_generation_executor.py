@@ -77,6 +77,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
     FILE_TREE_PART_TYPE,
     FILE_TREE_RESPONSE_SCHEMA_REF,
+    GENERATIVE_UI_PART_TYPE,
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
@@ -383,6 +384,17 @@ def _file_tree_provider_text(payload: Mapping[str, Any]) -> str:
     return "File tree:\n" + to_canonical_json(dict(payload))
 
 
+def _core_report_provider_text(payload: Mapping[str, Any]) -> str:
+    """Deterministic model-visible text for one Core-computed report chart."""
+    try:
+        validate_registered_payload(GENERATIVE_UI_PART_TYPE, payload)
+    except PartPayloadInvalid as error:
+        raise GenerationExecutorError("the conversation contains a malformed Core report") from error
+    return "OmniVia Core report (computed by Core from this workspace's own chat records):\n" + to_canonical_json(
+        dict(payload)
+    )
+
+
 def _server_panel_provider_text(payload: Mapping[str, Any]) -> str:
     """Deterministic model-visible text for one observed MCP server status."""
     try:
@@ -553,6 +565,10 @@ def _provider_context(
             elif part.part_type == SERVER_PANEL_PART_TYPE:
                 provider_parts.append(
                     {"kind": "text", "text": _server_panel_provider_text(part.payload)}
+                )
+            elif part.part_type == GENERATIVE_UI_PART_TYPE:
+                provider_parts.append(
+                    {"kind": "text", "text": _core_report_provider_text(part.payload)}
                 )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None

@@ -60,6 +60,12 @@ produces it. The families below are written by Core today:
 * `server.panel` -- `service/chat_submit.py`, on the user's turn, from only the
   App Shell's read-only Dev MCP observation (`initialize` and `tools/list`; no
   tool is ever called). At most one per submission.
+* `core.report` -- the closed internal directive a submission may carry (at
+  most one) naming a fixed Core report.
+* `generative.ui` -- `service/chat_submit.py`, on the user's turn, computed by
+  Core from this workspace's own chat records for a `core.report` directive
+  (`service/chat_core_reports.py`). Only the three chart variants; never
+  accepted from a client.
 
 Nothing else is registered, on purpose. `packages/chat/src/self-rendered` in
 Platform decodes seventeen display-only part types that nothing produces, and
@@ -100,11 +106,15 @@ __all__ = [
     "CODE_DIFF_RESPONSE_SCHEMA_REF",
     "COMPARISON_MATRIX_PART_TYPE",
     "COMPARISON_MATRIX_RESPONSE_SCHEMA_REF",
+    "CORE_REPORTS",
+    "CORE_REPORT_PART_TYPE",
     "DATA_TABLE_RESPONSE_SCHEMA_REF",
     "DIAGRAM_FLOW_PART_TYPE",
     "DIAGRAM_FLOW_RESPONSE_SCHEMA_REF",
     "FILE_TREE_PART_TYPE",
     "FILE_TREE_RESPONSE_SCHEMA_REF",
+    "GENERATIVE_UI_CHART_VARIANTS",
+    "GENERATIVE_UI_PART_TYPE",
     "GUARDRAIL_NOTICE_PART_TYPE",
     "GUARDRAIL_NOTICE_REASON",
     "GUARDRAIL_NOTICE_SAFE_MESSAGE",
@@ -227,6 +237,19 @@ FILE_TREE_PART_TYPE: Final = "file.tree"
 
 #: One exact bounded MCP server status observed read-only by the App Shell.
 SERVER_PANEL_PART_TYPE: Final = "server.panel"
+
+#: A chart Core computed from this workspace's own records. Only the three chart
+#: variants of the shared generative renderer are registered; every other
+#: variant (weather, flights, carts ...) has no Core data and stays unregistered.
+GENERATIVE_UI_PART_TYPE: Final = "generative.ui"
+GENERATIVE_UI_CHART_VARIANTS: Final = frozenset({"chart-area", "chart-line", "chart-bars"})
+GENERATIVE_UI_MAX_POINTS: Final = 64
+GENERATIVE_UI_MAX_TEXT_UTF8_BYTES: Final = 256
+GENERATIVE_UI_MAX_ABS_VALUE: Final = 1_000_000_000
+
+#: The internal directive naming one fixed Core report to compute at submit.
+CORE_REPORT_PART_TYPE: Final = "core.report"
+CORE_REPORTS: Final = frozenset({"chat-activity", "response-time", "answers-by-kind"})
 
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
@@ -1449,6 +1472,59 @@ def _panel_text(value: Any, field: str, maximum: int) -> int:
     return len(text.encode("utf-8"))
 
 
+def _generative_text(payload: Mapping[str, Any], field: str) -> str:
+    value = payload[field]
+    if (
+        not isinstance(value, str)
+        or value == ""
+        or value.strip() != value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or len(value.encode("utf-8")) > GENERATIVE_UI_MAX_TEXT_UTF8_BYTES
+    ):
+        raise PartPayloadInvalid(field, "must be non-empty, trimmed, control-free and bounded")
+    return value
+
+
+def _validate_generative_ui(payload: Mapping[str, Any]) -> None:
+    """One Core-computed chart, exactly as Platform's generative renderer decodes it."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"variant", "title", "xLabel", "yLabel", "points"}),
+        optional=frozenset(),
+    )
+    if payload["variant"] not in GENERATIVE_UI_CHART_VARIANTS:
+        raise PartPayloadInvalid("variant", "must be one of the registered chart variants")
+    for field in ("title", "xLabel", "yLabel"):
+        _generative_text(payload, field)
+    points = payload["points"]
+    if not isinstance(points, list) or not 2 <= len(points) <= GENERATIVE_UI_MAX_POINTS:
+        raise PartPayloadInvalid("points", f"must list 2 to {GENERATIVE_UI_MAX_POINTS} points")
+    labels: set[str] = set()
+    for index, point in enumerate(points):
+        field = f"points[{index}]"
+        if not isinstance(point, Mapping) or set(point) != {"label", "value"}:
+            raise PartPayloadInvalid(field, "must be exactly label and value")
+        label = _generative_text(point, "label")
+        value = point["value"]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or abs(value) > GENERATIVE_UI_MAX_ABS_VALUE
+        ):
+            raise PartPayloadInvalid(f"{field}.value", "must be a bounded finite number")
+        if label in labels:
+            raise PartPayloadInvalid(f"{field}.label", "must be unique")
+        labels.add(label)
+
+
+def _validate_core_report(payload: Mapping[str, Any]) -> None:
+    """One closed internal request for a fixed Core report."""
+    _require_exact_keys(payload, required=frozenset({"report"}), optional=frozenset())
+    if payload["report"] not in CORE_REPORTS:
+        raise PartPayloadInvalid("report", "must name one fixed Core report")
+
+
 def _validate_server_panel(payload: Mapping[str, Any]) -> None:
     """The exact MCP server status Platform's MCP Server Panel projection admits."""
     _require_exact_keys(
@@ -1559,6 +1635,8 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     SPEC_SHEET_PART_TYPE: _validate_spec_sheet,
     SCORE_BREAKDOWN_PART_TYPE: _validate_score_breakdown,
     SERVER_PANEL_PART_TYPE: _validate_server_panel,
+    GENERATIVE_UI_PART_TYPE: _validate_generative_ui,
+    CORE_REPORT_PART_TYPE: _validate_core_report,
     TIMELINE_PART_TYPE: _validate_timeline,
 }
 

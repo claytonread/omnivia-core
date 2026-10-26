@@ -114,8 +114,14 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
     revalidate_attachments,
 )
 from omnivia_core_runtime.service.chat_command import ChatAggregateConflict, ChatCommand
+from omnivia_core_runtime.service.chat_core_reports import (
+    CoreReportUnavailable,
+    core_report_chart,
+)
 from omnivia_core_runtime.service.chat_interactions import read_chat_wait
 from omnivia_core_runtime.service.chat_part_registry import (
+    CORE_REPORT_PART_TYPE,
+    GENERATIVE_UI_PART_TYPE,
     RESPONSE_FORMAT_PART_TYPE,
     SERVER_PANEL_PART_TYPE,
     PartPayloadInvalid,
@@ -800,6 +806,12 @@ def _part(item: object, index: int) -> tuple[_Part, str]:
             f"{field}.visibility",
             "must be internal for a response-format directive",
         )
+    if part_type == CORE_REPORT_PART_TYPE and visibility != "internal":
+        raise _invalid(f"{field}.visibility", "must be internal for a Core report directive")
+    if part_type == GENERATIVE_UI_PART_TYPE:
+        # Only Core computes these charts (`chat_core_reports`); a client that could
+        # submit one could present any number as a Core report.
+        raise _invalid(f"{field}.type", "is produced only by Core")
     if "payload" not in item:
         raise _invalid(f"{field}.payload", "is required")
     payload, document = _canonical(item["payload"], f"{field}.payload")
@@ -839,6 +851,8 @@ def _validate_response_format_directives(parts: Sequence[_Part]) -> None:
             "editableParts",
             "contains more than one MCP server status",
         )
+    if sum(part.part_type == CORE_REPORT_PART_TYPE for part in parts) > 1:
+        raise _invalid("editableParts", "contains more than one Core report directive")
 
 
 def _digest(document: str) -> str:
@@ -1860,6 +1874,31 @@ def _same_references(
     )
 
 
+def _core_report_parts(writer: ChatWriter, parts: Sequence[_Part], now: int) -> tuple[_Part, ...]:
+    """The one Core-computed chart a `core.report` directive asks for, or none."""
+    directives = [part for part in parts if part.part_type == CORE_REPORT_PART_TYPE]
+    if not directives:
+        return ()
+    try:
+        payload = core_report_chart(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            report=str(directives[0].payload["report"]),
+            now_us=now,
+        )
+        validate_registered_payload(GENERATIVE_UI_PART_TYPE, payload)
+    except (CoreReportUnavailable, PartPayloadInvalid) as refused:
+        raise ChatAggregateConflict(f"this Core report is not available: {refused}") from None
+    return (
+        _Part(
+            part_type=GENERATIVE_UI_PART_TYPE,
+            visibility="standard",
+            payload=payload,
+            content_hash=_digest(to_canonical_json(payload)),
+        ),
+    )
+
+
 def _attachment_parts(pinned: Sequence[PinnedAttachment]) -> tuple[_Part, ...]:
     """One standard `attachment` Message part per pinned reference, in order."""
     parts: list[_Part] = []
@@ -2015,7 +2054,11 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
             blobs_root=blobs_root,
         )
         attachment_parts = _attachment_parts(pinned)
-        message_parts = (*request.parts, *attachment_parts)
+        # A Core report is computed here, inside the same transaction and before the
+        # first write, from Core's own records; too little data refuses the whole
+        # submission rather than commit an empty or invented chart.
+        report_parts = _core_report_parts(writer, request.parts, now)
+        message_parts = (*request.parts, *attachment_parts, *report_parts)
 
         sequence = conversation.latest_conversation_sequence + 1
         if queued_row is None:
@@ -2062,7 +2105,7 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
                 _queued_content_hash(
                     [_editable_part_wire(part) for part in message_parts]
                 )
-                if attachment_parts
+                if attachment_parts or report_parts
                 else request.content_hash
             ),
             completion_status="complete",
@@ -2083,7 +2126,7 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
                 payload=part.payload,
                 content_hash=part.content_hash,
                 created_at_us=now,
-                provenance="human",
+                provenance="system" if part.part_type == GENERATIVE_UI_PART_TYPE else "human",
             )
         if first_send:
             # After the message and before the head event, because 0029 keys the

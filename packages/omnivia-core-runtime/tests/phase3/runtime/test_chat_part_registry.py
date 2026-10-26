@@ -31,11 +31,13 @@ from omnivia_core_runtime.service.chat_part_registry import (
     CODE_DIFF_RESPONSE_SCHEMA_REF,
     COMPARISON_MATRIX_PART_TYPE,
     COMPARISON_MATRIX_RESPONSE_SCHEMA_REF,
+    CORE_REPORT_PART_TYPE,
     DATA_TABLE_RESPONSE_SCHEMA_REF,
     DIAGRAM_FLOW_PART_TYPE,
     DIAGRAM_FLOW_RESPONSE_SCHEMA_REF,
     FILE_TREE_PART_TYPE,
     FILE_TREE_RESPONSE_SCHEMA_REF,
+    GENERATIVE_UI_PART_TYPE,
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
@@ -103,14 +105,19 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   file.tree   validated relative path tree materialised by the executor
     #   server.panel  `chat_submit`, on the user's turn, from only the App Shell's
     #               read-only Dev MCP observation (initialize and tools/list)
+    #   core.report  explicit internal submit directive naming one fixed Core report
+    #   generative.ui  `chat_submit`, on the user's turn, computed by
+    #               `chat_core_reports` from Core's own chat records (charts only)
     assert REGISTERED_PART_TYPES == (
         ACTIVITY_SERIES_PART_TYPE,
         ATTACHMENT_PART_TYPE,
         CHART_PART_TYPE,
         CODE_DIFF_PART_TYPE,
         COMPARISON_MATRIX_PART_TYPE,
+        CORE_REPORT_PART_TYPE,
         DIAGRAM_FLOW_PART_TYPE,
         FILE_TREE_PART_TYPE,
+        GENERATIVE_UI_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
         MATH_STEPS_PART_TYPE,
         METRIC_NUMBER_PART_TYPE,
