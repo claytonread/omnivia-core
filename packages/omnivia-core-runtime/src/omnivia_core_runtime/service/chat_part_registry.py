@@ -62,6 +62,11 @@ produces it. The families below are written by Core today:
   tool is ever called). At most one per submission.
 * `core.report` -- the closed internal directive a submission may carry (at
   most one) naming a fixed Core report.
+* `plan.request` -- the closed internal directive a submission may carry (at
+  most one) asking the provider to plan this turn and naming one view.
+* `agent.plan`, `todo.list`, `job.progress` -- `service/chat_generation_executor.py`,
+  one of them (the requested view) from the provider's own reported plan
+  (`codex.plan` tool result), never from model prose and never from a client.
 * `generative.ui` -- `service/chat_submit.py`, on the user's turn, computed by
   Core from this workspace's own chat records for a `core.report` directive
   (`service/chat_core_reports.py`). Only the three chart variants; never
@@ -100,6 +105,7 @@ from omnivia_core_runtime.service.chat_attachment_authority import ATTACHMENT_PA
 __all__ = [
     "ACTIVITY_SERIES_PART_TYPE",
     "ACTIVITY_SERIES_RESPONSE_SCHEMA_REF",
+    "AGENT_PLAN_PART_TYPE",
     "CHART_PART_TYPE",
     "CHART_RESPONSE_SCHEMA_REF",
     "CODE_DIFF_PART_TYPE",
@@ -118,11 +124,15 @@ __all__ = [
     "GUARDRAIL_NOTICE_PART_TYPE",
     "GUARDRAIL_NOTICE_REASON",
     "GUARDRAIL_NOTICE_SAFE_MESSAGE",
+    "JOB_PROGRESS_PART_TYPE",
     "MATH_STEPS_PART_TYPE",
     "MATH_STEPS_RESPONSE_SCHEMA_REF",
     "METRIC_NUMBER_PART_TYPE",
     "NUMBER_TICKER_RESPONSE_SCHEMA_REF",
     "PART_REGISTRY_VERSION",
+    "PLAN_MAX_STEPS",
+    "PLAN_REQUEST_PART_TYPE",
+    "PLAN_VIEWS",
     "PRESENTATION_ONLY_PART_TYPES",
     "REASONING_SUMMARY_PART_TYPE",
     "REGISTERED_PART_TYPES",
@@ -136,6 +146,8 @@ __all__ = [
     "TEXT_PART_TYPE",
     "TIMELINE_PART_TYPE",
     "TIMELINE_RESPONSE_SCHEMA_REF",
+    "TODO_LIST_PART_TYPE",
+    "TODO_STATUSES",
     "TOOL_CALL_PART_TYPE",
     "WEB_SEARCH_MAX_SOURCES",
     "WEB_SEARCH_PART_TYPE",
@@ -250,6 +262,18 @@ GENERATIVE_UI_MAX_ABS_VALUE: Final = 1_000_000_000
 #: The internal directive naming one fixed Core report to compute at submit.
 CORE_REPORT_PART_TYPE: Final = "core.report"
 CORE_REPORTS: Final = frozenset({"chat-activity", "response-time", "answers-by-kind"})
+
+#: The internal directive asking the provider to plan this turn, and naming the
+#: one view Core commits from the provider's own reported plan.
+PLAN_REQUEST_PART_TYPE: Final = "plan.request"
+PLAN_VIEWS: Final = frozenset({"agent-plan", "todo-list", "job-progress"})
+#: The three views of a provider-reported plan. Core produces only the shapes below.
+AGENT_PLAN_PART_TYPE: Final = "agent.plan"
+TODO_LIST_PART_TYPE: Final = "todo.list"
+JOB_PROGRESS_PART_TYPE: Final = "job.progress"
+PLAN_MAX_STEPS: Final = 32
+PLAN_MAX_TEXT_UTF8_BYTES: Final = 256
+TODO_STATUSES: Final = frozenset({"pending", "active", "done"})
 
 DATA_TABLE_MAX_COLUMNS: Final = 16
 DATA_TABLE_MAX_ROWS: Final = 100
@@ -1518,6 +1542,91 @@ def _validate_generative_ui(payload: Mapping[str, Any]) -> None:
         labels.add(label)
 
 
+def _plan_text(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or value == ""
+        or value.strip() != value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or len(value.encode("utf-8")) > PLAN_MAX_TEXT_UTF8_BYTES
+    ):
+        raise PartPayloadInvalid(field, "must be non-empty, trimmed, control-free and bounded")
+    return value
+
+
+def _plan_rows(payload: Mapping[str, Any], field: str, keys: frozenset[str]) -> list[Mapping[str, Any]]:
+    rows = payload[field]
+    if not isinstance(rows, list) or not 1 <= len(rows) <= PLAN_MAX_STEPS:
+        raise PartPayloadInvalid(field, f"must list 1 to {PLAN_MAX_STEPS} steps")
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping) or set(row) != keys:
+            raise PartPayloadInvalid(f"{field}[{index}]", "has an unexpected shape")
+    return rows
+
+
+def _bounded_index(payload: Mapping[str, Any], field: str, maximum: int) -> int:
+    value = payload[field]
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+        raise PartPayloadInvalid(field, f"must be an integer from 0 to {maximum}")
+    return value
+
+
+def _validate_plan_request(payload: Mapping[str, Any]) -> None:
+    """One closed internal request that the provider plan this turn, and the view to keep."""
+    _require_exact_keys(payload, required=frozenset({"view"}), optional=frozenset())
+    if payload["view"] not in PLAN_VIEWS:
+        raise PartPayloadInvalid("view", "must name one plan view")
+
+
+def _validate_agent_plan(payload: Mapping[str, Any]) -> None:
+    """The provider's reported plan as steps and the first step not yet done."""
+    _require_exact_keys(payload, required=frozenset({"title", "steps", "activeIndex"}), optional=frozenset())
+    _plan_text(payload["title"], "title")
+    steps = _plan_rows(payload, "steps", frozenset({"label"}))
+    for index, step in enumerate(steps):
+        _plan_text(step["label"], f"steps[{index}].label")
+    _bounded_index(payload, "activeIndex", len(steps))
+
+
+def _validate_todo_list(payload: Mapping[str, Any]) -> None:
+    """The provider's reported plan as a checklist with each step's reported status."""
+    _require_exact_keys(payload, required=frozenset({"title", "items"}), optional=frozenset())
+    _plan_text(payload["title"], "title")
+    items = _plan_rows(payload, "items", frozenset({"text", "status"}))
+    for index, item in enumerate(items):
+        _plan_text(item["text"], f"items[{index}].text")
+        if item["status"] not in TODO_STATUSES:
+            raise PartPayloadInvalid(f"items[{index}].status", "must be pending, active or done")
+
+
+def _validate_job_progress(payload: Mapping[str, Any]) -> None:
+    """The provider's reported plan as equal-weight stages; success only when all are done."""
+    _require_exact_keys(
+        payload,
+        required=frozenset({"title", "stages", "stageIndex", "stageProgress"}),
+        optional=frozenset({"outcome"}),
+    )
+    _plan_text(payload["title"], "title")
+    stages = _plan_rows(payload, "stages", frozenset({"name", "weight"}))
+    names: set[str] = set()
+    for index, stage in enumerate(stages):
+        name = _plan_text(stage["name"], f"stages[{index}].name")
+        if name in names:
+            raise PartPayloadInvalid(f"stages[{index}].name", "must be unique")
+        names.add(name)
+        if isinstance(stage["weight"], bool) or stage["weight"] != 1:
+            raise PartPayloadInvalid(f"stages[{index}].weight", "must be 1")
+    stage_index = _bounded_index(payload, "stageIndex", len(stages))
+    progress = payload["stageProgress"]
+    if isinstance(progress, bool) or progress not in (0, 1):
+        raise PartPayloadInvalid("stageProgress", "must be 0, or 1 when every stage is done")
+    done = stage_index == len(stages)
+    if done != (progress == 1) or done != ("outcome" in payload):
+        raise PartPayloadInvalid("outcome", "is present exactly when every stage is done")
+    if done and payload["outcome"] != {"status": "success"}:
+        raise PartPayloadInvalid("outcome", "must be success when every stage is done")
+
+
 def _validate_core_report(payload: Mapping[str, Any]) -> None:
     """One closed internal request for a fixed Core report."""
     _require_exact_keys(payload, required=frozenset({"report"}), optional=frozenset())
@@ -1637,6 +1746,10 @@ _VALIDATORS: Final[Mapping[str, Any]] = {
     SERVER_PANEL_PART_TYPE: _validate_server_panel,
     GENERATIVE_UI_PART_TYPE: _validate_generative_ui,
     CORE_REPORT_PART_TYPE: _validate_core_report,
+    PLAN_REQUEST_PART_TYPE: _validate_plan_request,
+    AGENT_PLAN_PART_TYPE: _validate_agent_plan,
+    TODO_LIST_PART_TYPE: _validate_todo_list,
+    JOB_PROGRESS_PART_TYPE: _validate_job_progress,
     TIMELINE_PART_TYPE: _validate_timeline,
 }
 

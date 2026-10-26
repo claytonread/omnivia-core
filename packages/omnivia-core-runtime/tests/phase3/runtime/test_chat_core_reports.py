@@ -91,6 +91,15 @@ def test_too_little_data_refuses_the_whole_submission_before_writing(seeded: Any
         ({"type": "core.report", "payload": {"report": "chat-activity"}},),  # must be internal
         (report_directive("weather"),),
         (report_directive("chat-activity"), report_directive("answers-by-kind")),
+        # Plan cards come only from the provider's reported plan, never a client.
+        ({"type": "todo.list", "payload": {"title": "T", "items": [{"text": "a", "status": "done"}]}},),
+        ({"type": "agent.plan", "payload": {"title": "T", "steps": [{"label": "a"}], "activeIndex": 0}},),
+        ({"type": "job.progress", "payload": {"title": "T", "stages": [{"name": "a", "weight": 1}], "stageIndex": 0, "stageProgress": 0}},),
+        ({"type": "plan.request", "payload": {"view": "todo-list"}},),  # must be internal
+        (
+            {"type": "plan.request", "visibility": "internal", "payload": {"view": "todo-list"}},
+            {"type": "plan.request", "visibility": "internal", "payload": {"view": "agent-plan"}},
+        ),
     ],
 )
 def test_forged_charts_and_malformed_or_repeated_directives_are_refused(seeded: Any, parts: tuple[dict[str, Any], ...]) -> None:

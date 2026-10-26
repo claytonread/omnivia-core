@@ -25,6 +25,7 @@ from omnivia_core_runtime.service.chat_attachment_authority import (
 from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_PART_TYPE,
     ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
+    AGENT_PLAN_PART_TYPE,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
     CODE_DIFF_PART_TYPE,
@@ -41,11 +42,13 @@ from omnivia_core_runtime.service.chat_part_registry import (
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    JOB_PROGRESS_PART_TYPE,
     MATH_STEPS_PART_TYPE,
     MATH_STEPS_RESPONSE_SCHEMA_REF,
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
     PART_REGISTRY_VERSION,
+    PLAN_REQUEST_PART_TYPE,
     REASONING_SUMMARY_PART_TYPE,
     REGISTERED_PART_TYPES,
     RESPONSE_FORMAT_PART_TYPE,
@@ -58,6 +61,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     TEXT_PART_TYPE,
     TIMELINE_PART_TYPE,
     TIMELINE_RESPONSE_SCHEMA_REF,
+    TODO_LIST_PART_TYPE,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
     PartPayloadInvalid,
@@ -105,11 +109,15 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
     #   file.tree   validated relative path tree materialised by the executor
     #   server.panel  `chat_submit`, on the user's turn, from only the App Shell's
     #               read-only Dev MCP observation (initialize and tools/list)
+    #   plan.request  explicit internal submit directive asking the provider to plan
+    #   agent.plan / todo.list / job.progress  the requested view of the provider's
+    #               own reported plan (`codex.plan`), materialised by the executor
     #   core.report  explicit internal submit directive naming one fixed Core report
     #   generative.ui  `chat_submit`, on the user's turn, computed by
     #               `chat_core_reports` from Core's own chat records (charts only)
     assert REGISTERED_PART_TYPES == (
         ACTIVITY_SERIES_PART_TYPE,
+        AGENT_PLAN_PART_TYPE,
         ATTACHMENT_PART_TYPE,
         CHART_PART_TYPE,
         CODE_DIFF_PART_TYPE,
@@ -119,8 +127,10 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
         FILE_TREE_PART_TYPE,
         GENERATIVE_UI_PART_TYPE,
         GUARDRAIL_NOTICE_PART_TYPE,
+        JOB_PROGRESS_PART_TYPE,
         MATH_STEPS_PART_TYPE,
         METRIC_NUMBER_PART_TYPE,
+        PLAN_REQUEST_PART_TYPE,
         REASONING_SUMMARY_PART_TYPE,
         RESPONSE_FORMAT_PART_TYPE,
         RICH_PROSE_PART_TYPE,
@@ -129,6 +139,7 @@ def test_the_registry_states_only_the_families_core_produces() -> None:
         SPEC_SHEET_PART_TYPE,
         TEXT_PART_TYPE,
         TIMELINE_PART_TYPE,
+        TODO_LIST_PART_TYPE,
         TOOL_CALL_PART_TYPE,
         WEB_SEARCH_PART_TYPE,
     )

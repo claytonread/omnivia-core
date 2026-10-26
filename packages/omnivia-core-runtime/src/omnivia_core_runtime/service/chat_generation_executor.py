@@ -66,6 +66,7 @@ from omnivia_core_runtime.service.chat_generation import (
 from omnivia_core_runtime.service.chat_part_registry import (
     ACTIVITY_SERIES_PART_TYPE,
     ACTIVITY_SERIES_RESPONSE_SCHEMA_REF,
+    AGENT_PLAN_PART_TYPE,
     CHART_PART_TYPE,
     CHART_RESPONSE_SCHEMA_REF,
     CODE_DIFF_PART_TYPE,
@@ -81,10 +82,12 @@ from omnivia_core_runtime.service.chat_part_registry import (
     GUARDRAIL_NOTICE_PART_TYPE,
     GUARDRAIL_NOTICE_REASON,
     GUARDRAIL_NOTICE_SAFE_MESSAGE,
+    JOB_PROGRESS_PART_TYPE,
     MATH_STEPS_PART_TYPE,
     MATH_STEPS_RESPONSE_SCHEMA_REF,
     METRIC_NUMBER_PART_TYPE,
     NUMBER_TICKER_RESPONSE_SCHEMA_REF,
+    PLAN_REQUEST_PART_TYPE,
     PRESENTATION_ONLY_PART_TYPES,
     REASONING_SUMMARY_PART_TYPE,
     RESPONSE_FORMAT_PART_TYPE,
@@ -96,6 +99,7 @@ from omnivia_core_runtime.service.chat_part_registry import (
     SPEC_SHEET_RESPONSE_SCHEMA_REF,
     TIMELINE_PART_TYPE,
     TIMELINE_RESPONSE_SCHEMA_REF,
+    TODO_LIST_PART_TYPE,
     TOOL_CALL_PART_TYPE,
     WEB_SEARCH_PART_TYPE,
     PartPayloadInvalid,
@@ -495,6 +499,20 @@ def _provider_context(
         for part in chat.read_message_parts(
             connection, workspace_id=workspace_id, message_id=message.message_id
         ):
+            if part.part_type == PLAN_REQUEST_PART_TYPE and part.visibility == "internal":
+                # Only on the turn that asked: fixed Core copy, never the user's words.
+                if message.message_id == trigger_message_id:
+                    provider_parts.append({"kind": "text", "text": PLAN_REQUEST_INSTRUCTION})
+                    part_refs.append(
+                        {
+                            "partId": part.part_id,
+                            "partIndex": part.part_index,
+                            "partType": part.part_type,
+                            "schemaVersion": part.schema_version,
+                            "contentHash": part.content_hash,
+                        }
+                    )
+                continue
             if part.visibility != "standard":
                 continue
             if part.part_type == ATTACHMENT_PART_TYPE:
@@ -569,6 +587,17 @@ def _provider_context(
             elif part.part_type == GENERATIVE_UI_PART_TYPE:
                 provider_parts.append(
                     {"kind": "text", "text": _core_report_provider_text(part.payload)}
+                )
+            elif part.part_type in _PLAN_PART_TYPES:
+                try:
+                    validate_registered_payload(part.part_type, part.payload)
+                except PartPayloadInvalid as error:
+                    raise GenerationExecutorError("the conversation contains a malformed plan") from error
+                provider_parts.append(
+                    {
+                        "kind": "text",
+                        "text": "Plan (reported by the provider):\n" + to_canonical_json(dict(part.payload)),
+                    }
                 )
             else:
                 text = part.payload.get("text") if part.part_type == "text" else None
@@ -869,6 +898,77 @@ def _existing_manifest_timestamps(
 NO_EXECUTION_PATH: Final = "no_governed_execution_path"
 MAX_PROVIDER_TOOL_RESULT_BYTES: Final = 64 * 1024
 PROVIDER_WEB_SEARCH_TOOL_NAME: Final = "codex.web_search"
+#: The provider's own reported plan for the turn (Codex `turn/plan/updated`). A fact
+#: carrier, never a tool part: Core turns it into the one plan view the user asked for.
+PROVIDER_PLAN_TOOL_NAME: Final = "codex.plan"
+#: The fixed Core-authored instruction a `plan.request` adds to its own turn.
+PLAN_REQUEST_INSTRUCTION: Final = (
+    "OmniVia request: plan this task with your planning tool before you work on it, "
+    "and keep every step's status updated as you go."
+)
+_PLAN_STATUS_TO_TODO: Final = {"pending": "pending", "inProgress": "active", "completed": "done"}
+_PLAN_FAMILY: Final = {
+    "agent-plan": AGENT_PLAN_PART_TYPE,
+    "todo-list": TODO_LIST_PART_TYPE,
+    "job-progress": JOB_PROGRESS_PART_TYPE,
+}
+_PLAN_PART_TYPES: Final = frozenset(_PLAN_FAMILY.values())
+
+
+def plan_view_part(view: str | None, result: chat.ChatToolResult | None) -> tuple[str, dict[str, Any]] | None:
+    """The one requested view of the provider's last reported plan, or none.
+
+    Built only from the committed provider result; anything outside the registered
+    shape (a duplicate stage name, an unknown status) yields no card rather than a
+    guessed one.
+    """
+    if view not in _PLAN_FAMILY or result is None or result.status != "succeeded":
+        return None
+    steps = result.result_payload.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return None
+    rows: list[tuple[str, str]] = []
+    for step in steps:
+        if (
+            not isinstance(step, Mapping)
+            or set(step) != {"step", "status"}
+            or not isinstance(step["step"], str)
+            or step["status"] not in _PLAN_STATUS_TO_TODO
+        ):
+            return None
+        rows.append((step["step"], str(step["status"])))
+    active = next((index for index, (_, status) in enumerate(rows) if status != "completed"), len(rows))
+    payload: dict[str, Any]
+    if view == "todo-list":
+        payload = {
+            "title": "Plan checklist",
+            "items": [{"text": text, "status": _PLAN_STATUS_TO_TODO[status]} for text, status in rows],
+        }
+    elif view == "agent-plan":
+        payload = {"title": "Plan", "steps": [{"label": text} for text, _ in rows], "activeIndex": active}
+    else:
+        done = active == len(rows)
+        payload = {
+            "title": "Plan progress",
+            "stages": [{"name": text, "weight": 1} for text, _ in rows],
+            "stageIndex": active,
+            "stageProgress": 1 if done else 0,
+            **({"outcome": {"status": "success"}} if done else {}),
+        }
+    part_type = _PLAN_FAMILY[view]
+    try:
+        validate_registered_payload(part_type, payload)
+    except PartPayloadInvalid:
+        return None
+    return part_type, payload
+
+
+def _trigger_plan_view(connection: sqlite3.Connection, *, workspace_id: str, trigger_message_id: str) -> str | None:
+    for part in chat.read_message_parts(connection, workspace_id=workspace_id, message_id=trigger_message_id):
+        if part.part_type == PLAN_REQUEST_PART_TYPE and part.visibility == "internal":
+            view = part.payload.get("view")
+            return view if isinstance(view, str) else None
+    return None
 
 
 def tool_call_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
@@ -1071,6 +1171,7 @@ def _message_parts(
     guardrail_notice: bool = False,
     structured_outputs: tuple[chat.GenerationStructuredOutput, ...] = (),
     tool_results: Mapping[str, chat.ChatToolResult] | None = None,
+    plan_part: tuple[str, dict[str, Any]] | None = None,
 ) -> tuple[tuple[str, dict[str, Any]], ...]:
     """Ordered parts: provider summary, answer text, guardrail, then tools.
 
@@ -1089,6 +1190,8 @@ def _message_parts(
         # message changes meaning; only typed non-text content can omit it.
         parts.append(("text", {"text": text}))
     parts.extend(structured_output_message_part(output) for output in structured_outputs)
+    if plan_part is not None:
+        parts.append(plan_part)
     if guardrail_notice:
         parts.append((GUARDRAIL_NOTICE_PART_TYPE, guardrail_notice_part_payload()))
     parts.extend(_tool_call_message_part(call, tool_results or {}, text) for call in tool_calls)
@@ -1102,6 +1205,7 @@ def _message_hash(
     guardrail_notice: bool = False,
     structured_outputs: tuple[chat.GenerationStructuredOutput, ...] = (),
     tool_results: Mapping[str, chat.ChatToolResult] | None = None,
+    plan_part: tuple[str, dict[str, Any]] | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     """The Message `content_hash` and one part hash per part, in part order.
 
@@ -1126,6 +1230,7 @@ def _message_hash(
         guardrail_notice,
         structured_outputs,
         tool_results,
+        plan_part,
     )
     documents = [_part_document(part_type, payload) for part_type, payload in parts]
     part_hashes = tuple(
@@ -2503,10 +2608,24 @@ class ChatGenerationExecutor:
         # list. Read by job, not attempt: `text` above is assembled across
         # every hop of this Generation, so the parts beside it must span the
         # same attempts or the Message would state only its last hop's calls.
-        tool_calls = chat.read_chat_tool_calls_for_generation_job(
+        all_calls = chat.read_chat_tool_calls_for_generation_job(
             self.connection,
             workspace_id=self.workspace_id,
             generation_job_id=job.generation_job_id,
+        )
+        # A reported plan is a fact carrier, not a tool part; the user's requested
+        # view of the LAST reported plan is the only thing it becomes.
+        tool_calls = tuple(call for call in all_calls if call.tool_name != PROVIDER_PLAN_TOOL_NAME)
+        plan_calls = [call for call in all_calls if call.tool_name == PROVIDER_PLAN_TOOL_NAME]
+        plan_part = plan_view_part(
+            _trigger_plan_view(
+                self.connection, workspace_id=self.workspace_id, trigger_message_id=job.trigger_message_id
+            ),
+            chat.read_chat_tool_result(
+                self.connection, workspace_id=self.workspace_id, tool_call_id=plan_calls[-1].tool_call_id
+            )
+            if plan_calls
+            else None,
         )
         reasoning_summaries = chat.read_generation_reasoning_summaries(
             self.connection,
@@ -2540,6 +2659,7 @@ class ChatGenerationExecutor:
             guardrail_notice,
             structured_outputs,
             tool_results,
+            plan_part,
         )
         existing = self.connection.execute(
             "SELECT content_hash FROM omnivia_chat_messages "
@@ -2618,6 +2738,7 @@ class ChatGenerationExecutor:
                     guardrail_notice,
                     structured_outputs,
                     tool_results,
+                    plan_part,
                 )
             ):
                 if part_type in {TOOL_CALL_PART_TYPE, WEB_SEARCH_PART_TYPE}:
@@ -2635,6 +2756,9 @@ class ChatGenerationExecutor:
                 elif part_type == METRIC_NUMBER_PART_TYPE:
                     validate_registered_payload(part_type, payload)
                     part_id = _stable_id("assistant-metric-part", job.generation_job_id)
+                elif part_type in _PLAN_PART_TYPES:
+                    validate_registered_payload(part_type, payload)
+                    part_id = _stable_id("assistant-plan-part", job.generation_job_id)
                 else:
                     part_id = _stable_id("assistant-part", job.generation_job_id)
                 writer.append_message_part(

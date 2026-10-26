@@ -120,10 +120,14 @@ from omnivia_core_runtime.service.chat_core_reports import (
 )
 from omnivia_core_runtime.service.chat_interactions import read_chat_wait
 from omnivia_core_runtime.service.chat_part_registry import (
+    AGENT_PLAN_PART_TYPE,
     CORE_REPORT_PART_TYPE,
     GENERATIVE_UI_PART_TYPE,
+    JOB_PROGRESS_PART_TYPE,
+    PLAN_REQUEST_PART_TYPE,
     RESPONSE_FORMAT_PART_TYPE,
     SERVER_PANEL_PART_TYPE,
+    TODO_LIST_PART_TYPE,
     PartPayloadInvalid,
     validate_registered_payload,
 )
@@ -808,9 +812,11 @@ def _part(item: object, index: int) -> tuple[_Part, str]:
         )
     if part_type == CORE_REPORT_PART_TYPE and visibility != "internal":
         raise _invalid(f"{field}.visibility", "must be internal for a Core report directive")
-    if part_type == GENERATIVE_UI_PART_TYPE:
-        # Only Core computes these charts (`chat_core_reports`); a client that could
-        # submit one could present any number as a Core report.
+    if part_type == PLAN_REQUEST_PART_TYPE and visibility != "internal":
+        raise _invalid(f"{field}.visibility", "must be internal for a plan request")
+    if part_type in {GENERATIVE_UI_PART_TYPE, AGENT_PLAN_PART_TYPE, TODO_LIST_PART_TYPE, JOB_PROGRESS_PART_TYPE}:
+        # Only Core produces these (Core reports; the provider's own reported plan);
+        # a client that could submit one could present anything as either.
         raise _invalid(f"{field}.type", "is produced only by Core")
     if "payload" not in item:
         raise _invalid(f"{field}.payload", "is required")
@@ -853,6 +859,8 @@ def _validate_response_format_directives(parts: Sequence[_Part]) -> None:
         )
     if sum(part.part_type == CORE_REPORT_PART_TYPE for part in parts) > 1:
         raise _invalid("editableParts", "contains more than one Core report directive")
+    if sum(part.part_type == PLAN_REQUEST_PART_TYPE for part in parts) > 1:
+        raise _invalid("editableParts", "contains more than one plan request")
 
 
 def _digest(document: str) -> str:
