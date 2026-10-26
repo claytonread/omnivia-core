@@ -243,7 +243,13 @@ def check_versions_and_python_requirement() -> list[str]:
     for pkg in ALL_PACKAGES:
         manifest = load_manifest(pkg.manifest_path)
         version = get_str(manifest, "project", "version")
-        if version != "0.1.0":
+        # The runtime's version is its signed release identity: the shared
+        # runtime selects the highest installed release_version, so each local
+        # runtime release advances it. It stays within 0.1.x.
+        if pkg is RUNTIME:
+            if re.fullmatch(r"0\.1\.(0|[1-9][0-9]*)", version) is None:
+                findings.append(f"{pkg.manifest_path}: project.version={version!r}, expected '0.1.x'")
+        elif version != "0.1.0":
             findings.append(f"{pkg.manifest_path}: project.version={version!r}, expected '0.1.0'")
         requires_python = get_str(manifest, "project", "requires-python")
         if requires_python != ">=3.11":
