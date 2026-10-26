@@ -73,6 +73,7 @@ from omnivia_core_runtime.service.chat_submit import (
     COMMIT_MESSAGE_AMENDMENT_COMMAND,
     REGENERATE_RESPONSE_COMMAND,
     RETRY_GENERATION_COMMAND,
+    STOP_GENERATION_COMMAND,
     SUBMIT_MESSAGE_COMMAND,
     retry_generation_attempt_id,
 )
@@ -456,6 +457,11 @@ class ChatHandlers:
                     command_id, generation_job_id
                 ),
             )
+        elif request.command_name == STOP_GENERATION_COMMAND and not outcome.replayed:
+            # The stop is durable; this only ends a provider stream still held for it.
+            generation_job_id = request.command.get("jobId")
+            if isinstance(generation_job_id, str) and self.execute_generation is not None:
+                self.execute_generation(stopped_generation_job_id=generation_job_id)
         elif request.command_name in _FORK_GENERATION_COMMANDS and not outcome.replayed:
             command_id = request.command.get("commandId")
             if not isinstance(command_id, str):  # validated by the resolver

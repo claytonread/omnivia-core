@@ -64,6 +64,8 @@ class ChatGenerationWorker:
     _wake: threading.Event = field(default_factory=threading.Event)
     _stopping: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
+    #: The job whose provider stream is held right now, and how to end that stream.
+    _streaming: tuple[str, Callable[[], None]] | None = None
 
     def __post_init__(self) -> None:
         invoke = self.executor.invoke
@@ -73,6 +75,14 @@ class ChatGenerationWorker:
 
     def submit(self, **fields: Any) -> None:
         """The `ChatGenerationExecution` a handler calls after its commit. Never blocks."""
+        stopped = fields.get("stopped_generation_job_id")
+        if stopped is not None:
+            # A committed stop: end the held provider stream now rather than at its next
+            # event. Without the gate -- the worker holds none while it waits there.
+            streaming = self._streaming
+            if streaming is not None and streaming[0] == stopped:
+                streaming[1]()
+            return
         if fields.get("queued_submission_id") is None:
             self._retries.append(fields)
         self._wake.set()
@@ -137,10 +147,16 @@ class ChatGenerationWorker:
         invoke: Callable[[ProviderInvocationRequest], Any],
         request: ProviderInvocationRequest,
     ) -> Iterator[Mapping[str, Any]]:
-        stream = self._outside_gate(lambda: iter(invoke(request)))
-        while True:
-            try:
-                event = self._outside_gate(lambda: next(stream))
-            except StopIteration:
-                return
-            yield event
+        abort = getattr(invoke, "abort", None)
+        if callable(abort):
+            self._streaming = (request.job_id, functools.partial(abort, request.invocation_id))
+        try:
+            stream = self._outside_gate(lambda: iter(invoke(request)))
+            while True:
+                try:
+                    event = self._outside_gate(lambda: next(stream))
+                except StopIteration:
+                    return
+                yield event
+        finally:
+            self._streaming = None

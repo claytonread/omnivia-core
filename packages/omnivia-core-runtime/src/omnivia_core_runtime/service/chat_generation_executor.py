@@ -1143,6 +1143,8 @@ class ChatGenerationExecutor:
 
     def execute(self, **fields: Any) -> None:
         """Run either a fresh queued submission or an already-opened retry attempt."""
+        if fields.get("stopped_generation_job_id") is not None:
+            return  # run inline, nothing else can be streaming while a stop commits
         if fields.get("queued_submission_id") is not None:
             self.execute_submission(
                 queued_submission_id=str(fields["queued_submission_id"]),

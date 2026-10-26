@@ -35,8 +35,9 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import socket
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.client import HTTPConnection, HTTPException
 from typing import Any, Final
 from urllib.parse import urlsplit
@@ -250,6 +251,36 @@ class LocalProviderRouteClient:
     path: str
     token: str
     timeout_seconds: float
+    #: Open sockets by invocation id, so a stop on another thread can end one.
+    _open: dict[str, socket.socket] = field(default_factory=dict, compare=False, repr=False)
+
+    def abort(self, invocation_id: str) -> None:
+        """End a held stream from any thread: the blocked read sees EOF and unwinds.
+
+        Closing this connection is what tells the Platform bridge to cancel the provider.
+        """
+        sock = self._open.get(invocation_id)
+        if sock is None:
+            # ponytail: a stop before the socket connects is seen at the next event.
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _hold_socket(self, connection: HTTPConnection, invocation_id: str) -> None:
+        # The socket itself, not `connection.sock`: http.client drops that reference
+        # once a `Connection: close` response opens, while the response still reads it.
+        connect = getattr(connection, "connect", None)
+        if connect is None:
+            return
+
+        def connect_and_hold() -> None:
+            connect()
+            if connection.sock is not None:
+                self._open[invocation_id] = connection.sock
+
+        connection.connect = connect_and_hold  # type: ignore[method-assign]
 
     def __call__(self, request: ProviderInvocationRequest) -> Iterator[Mapping[str, Any]]:
         body = to_canonical_json(request.to_wire()).encode("utf-8")
@@ -259,10 +290,12 @@ class LocalProviderRouteClient:
             "Authorization": f"Bearer {self.token}",
         }
         connection = HTTPConnection(self.host, self.port, timeout=self.timeout_seconds)
+        self._hold_socket(connection, request.invocation_id)
         try:
             response = _open_response(connection, self.path, body, headers)
             yield from _ndjson_events(response)
         finally:
+            self._open.pop(request.invocation_id, None)
             connection.close()
 
 
