@@ -499,6 +499,8 @@ def _provider_context(
                 # These exact Core-authored families belong to the transcript UI.
                 # They are not provider prompt content and therefore have no entry
                 # in either the F2a message or its model-visible part references.
+                # That includes a web search's sources: third-party titles never
+                # reach the model, and the cited links are already in the answer.
                 continue
             elif part.part_type == RICH_PROSE_PART_TYPE:
                 provider_parts.append(
@@ -880,7 +882,29 @@ def tool_call_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
     return payload
 
 
-def web_search_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
+# A citation is a link the committed answer makes on purpose: a Markdown link
+# target `[label](url)` (one level of balanced parentheses, so Wikipedia-style
+# URLs survive) or an autolink `<url>`, outside code spans and fences. It is
+# recorded only when that target is EXACTLY a committed source URL; bare URLs in
+# prose and link labels are never read, and nothing is inferred.
+_CODE: Final = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+_MARKDOWN_TARGET: Final = re.compile(
+    r"\]\((https://(?:[^\s()<>]|\([^\s()<>]*\))+)(?:\s+\"[^\"\n]*\")?\)"
+)
+_AUTOLINK: Final = re.compile(r"<(https://[^\s<>]+)>")
+
+
+def answer_link_urls(text: str) -> frozenset[str]:
+    """Every URL the answer deliberately links, in the exact form written."""
+    prose = _CODE.sub(" ", text)
+    return frozenset(_MARKDOWN_TARGET.findall(prose)) | frozenset(_AUTOLINK.findall(prose))
+
+
+def web_search_part_payload(
+    call: chat.ChatToolCall,
+    result: chat.ChatToolResult | None = None,
+    answer_text: str = "",
+) -> dict[str, Any]:
     """Publish only the query of one exact, completed provider search.
 
     The provider tool result contains no result documents, URLs or snippets,
@@ -902,17 +926,55 @@ def web_search_part_payload(call: chat.ChatToolCall) -> dict[str, Any]:
         validate_registered_payload(WEB_SEARCH_PART_TYPE, payload)
     except PartPayloadInvalid as error:
         raise GenerationExecutorError("a provider web search is malformed") from error
-    return payload
+    return _with_committed_sources(payload, result, answer_text)
 
 
-def _tool_call_message_part(call: chat.ChatToolCall) -> tuple[str, dict[str, Any]]:
+def _with_committed_sources(
+    payload: dict[str, Any], result: chat.ChatToolResult | None, answer_text: str
+) -> dict[str, Any]:
+    """Add the sources from this call's committed provider result, or none.
+
+    Sources come only from the durable tool result of the same call. Anything
+    that does not pass the registered shape drops ALL sources rather than some:
+    the search is still shown by its query, and nothing unchecked is kept.
+    """
+    if result is None or result.status != "succeeded":
+        return payload
+    reported = result.result_payload.get("sources")
+    if not isinstance(reported, list) or not reported:
+        return payload
+    cited = answer_link_urls(answer_text)
+    sources: list[dict[str, Any]] = []
+    for source in reported:
+        if (
+            not isinstance(source, Mapping)
+            or set(source) != {"url", "title", "domain", "opened"}
+            or not isinstance(source["url"], str)
+        ):
+            return payload
+        sources.append({**source, "cited": source["url"] in cited})
+    with_sources = {**payload, "sources": sources}
+    try:
+        validate_registered_payload(WEB_SEARCH_PART_TYPE, with_sources)
+    except PartPayloadInvalid:
+        return payload
+    return with_sources
+
+
+def _tool_call_message_part(
+    call: chat.ChatToolCall,
+    tool_results: Mapping[str, chat.ChatToolResult],
+    answer_text: str,
+) -> tuple[str, dict[str, Any]]:
     if (
         call.registry_ref == PROVIDER_REPORTED_REGISTRY_REF
         and getattr(call, "tool_version", None) == PROVIDER_REPORTED_TOOL_VERSION
         and call.tool_name == PROVIDER_WEB_SEARCH_TOOL_NAME
         and call.state == "succeeded"
     ):
-        return WEB_SEARCH_PART_TYPE, web_search_part_payload(call)
+        return WEB_SEARCH_PART_TYPE, web_search_part_payload(
+            call, tool_results.get(call.tool_call_id), answer_text
+        )
     return TOOL_CALL_PART_TYPE, tool_call_part_payload(call)
 
 
@@ -992,6 +1054,7 @@ def _message_parts(
     reasoning_summaries: tuple[chat.GenerationReasoningSummary, ...] = (),
     guardrail_notice: bool = False,
     structured_outputs: tuple[chat.GenerationStructuredOutput, ...] = (),
+    tool_results: Mapping[str, chat.ChatToolResult] | None = None,
 ) -> tuple[tuple[str, dict[str, Any]], ...]:
     """Ordered parts: provider summary, answer text, guardrail, then tools.
 
@@ -1012,7 +1075,7 @@ def _message_parts(
     parts.extend(structured_output_message_part(output) for output in structured_outputs)
     if guardrail_notice:
         parts.append((GUARDRAIL_NOTICE_PART_TYPE, guardrail_notice_part_payload()))
-    parts.extend(_tool_call_message_part(call) for call in tool_calls)
+    parts.extend(_tool_call_message_part(call, tool_results or {}, text) for call in tool_calls)
     return tuple(parts)
 
 
@@ -1022,6 +1085,7 @@ def _message_hash(
     reasoning_summaries: tuple[chat.GenerationReasoningSummary, ...] = (),
     guardrail_notice: bool = False,
     structured_outputs: tuple[chat.GenerationStructuredOutput, ...] = (),
+    tool_results: Mapping[str, chat.ChatToolResult] | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     """The Message `content_hash` and one part hash per part, in part order.
 
@@ -1036,6 +1100,8 @@ def _message_hash(
     `read_chat_tool_calls_for_generation_job` orders by provider position
     (attempt, step ordinal) for this reason, and the tool calls are durable
     before the commit, so a replay of the same generation hashes the same way.
+    The same holds for `tool_results`: provider results are durable before the
+    commit too.
     """
     parts = _message_parts(
         text,
@@ -1043,6 +1109,7 @@ def _message_hash(
         reasoning_summaries,
         guardrail_notice,
         structured_outputs,
+        tool_results,
     )
     documents = [_part_document(part_type, payload) for part_type, payload in parts]
     part_hashes = tuple(
@@ -2434,12 +2501,27 @@ class ChatGenerationExecutor:
             generation_job_id=job.generation_job_id,
             generation_attempt_id=attempt_id,
         )
+        # Only a provider web search turns its result into display data (sources).
+        tool_results = {
+            call.tool_call_id: result
+            for call in tool_calls
+            if call.tool_name == PROVIDER_WEB_SEARCH_TOOL_NAME
+            and (
+                result := chat.read_chat_tool_result(
+                    self.connection,
+                    workspace_id=self.workspace_id,
+                    tool_call_id=call.tool_call_id,
+                )
+            )
+            is not None
+        }
         message_hash, part_hashes = _message_hash(
             text,
             tool_calls,
             reasoning_summaries,
             guardrail_notice,
             structured_outputs,
+            tool_results,
         )
         existing = self.connection.execute(
             "SELECT content_hash FROM omnivia_chat_messages "
@@ -2517,6 +2599,7 @@ class ChatGenerationExecutor:
                     reasoning_summaries,
                     guardrail_notice,
                     structured_outputs,
+                    tool_results,
                 )
             ):
                 if part_type in {TOOL_CALL_PART_TYPE, WEB_SEARCH_PART_TYPE}:

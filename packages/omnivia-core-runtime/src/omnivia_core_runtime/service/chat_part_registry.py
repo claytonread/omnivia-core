@@ -26,7 +26,9 @@ produces it. The families below are written by Core today:
 * `tool.call` -- `service/chat_generation_executor.py`, from the durable
   provider-reported or governed tool ledger.
 * `web.search` -- `service/chat_generation_executor.py`, from a completed,
-  provider-reported `codex.web_search` lifecycle carrying only its query.
+  provider-reported `codex.web_search` lifecycle: its query and, when the
+  provider's committed tool result reports them, its bounded sources, each
+  marked `cited` only when the committed answer links that exact URL.
 * `guardrail.notice` -- `service/chat_generation_executor.py`, from only the
   provider's closed `content-filter` finish reason and fixed Core-authored copy.
 * `response.format` -- `service/chat_submit.py`, from an explicit internal
@@ -77,11 +79,13 @@ know this family".
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import re
 from collections.abc import Mapping
 from datetime import date
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 #: An accepted attachment's part type is defined with the authority that writes
 #: it, and imported rather than restated so the constant has one home.
@@ -123,6 +127,7 @@ __all__ = [
     "TIMELINE_PART_TYPE",
     "TIMELINE_RESPONSE_SCHEMA_REF",
     "TOOL_CALL_PART_TYPE",
+    "WEB_SEARCH_MAX_SOURCES",
     "WEB_SEARCH_PART_TYPE",
     "PartPayloadInvalid",
     "is_registered_part_type",
@@ -469,12 +474,73 @@ def _validate_reasoning_summary(payload: Mapping[str, Any]) -> None:
         raise PartPayloadInvalid("detail", "must be non-empty and NUL-free")
 
 
+WEB_SEARCH_MAX_SOURCES: Final = 20
+WEB_SEARCH_MAX_SOURCE_URL_UTF8_BYTES: Final = 2_048
+WEB_SEARCH_MAX_SOURCE_TITLE_UTF8_BYTES: Final = 256
+WEB_SEARCH_MAX_HOST_UTF8_BYTES: Final = 253
+# C1 controls and U+FEFF: Python's str.strip and JavaScript's String.trim
+# disagree on them, so a title holding one is refused on both sides alike.
+_TITLE_AMBIGUOUS: Final = re.compile("[\u0080-\u009f\ufeff]")
+_WEB_SEARCH_SOURCE_KEYS: Final = frozenset({"url", "title", "domain", "opened", "cited"})
+
+
+def _validate_web_search_source(source: Any, index: int) -> str:
+    """One search result as display data: a public https URL, its own host, a title."""
+    field = f"sources[{index}]"
+    if not isinstance(source, Mapping) or set(source) != _WEB_SEARCH_SOURCE_KEYS:
+        raise PartPayloadInvalid(field, "must be exactly url, title, domain, opened and cited")
+    url, title, domain = source["url"], source["title"], source["domain"]
+    if (
+        not isinstance(url, str)
+        or len(url.encode("utf-8")) > WEB_SEARCH_MAX_SOURCE_URL_UTF8_BYTES
+        or not url.startswith("https://")
+        or any(ord(character) <= 32 or ord(character) == 127 for character in url)
+        or "\\" in url
+    ):
+        raise PartPayloadInvalid(f"{field}.url", "must be a bounded https URL without spaces or controls")
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        parts.port  # noqa: B018 -- raises on a malformed port
+    except ValueError as error:
+        raise PartPayloadInvalid(f"{field}.url", "must parse as a URL") from error
+    if parts.scheme != "https" or parts.username is not None or parts.password is not None or not host:
+        raise PartPayloadInvalid(f"{field}.url", "must be https with a host and no credentials")
+    try:
+        ipaddress.ip_address(host)
+        is_ip = True
+    except ValueError:
+        is_ip = False
+    if (
+        is_ip
+        or "." not in host
+        or len(host.encode("utf-8")) > WEB_SEARCH_MAX_HOST_UTF8_BYTES
+        or host == "localhost"
+        or host.endswith((".", ".localhost", ".local"))
+    ):
+        raise PartPayloadInvalid(f"{field}.url", "must name a bounded public domain")
+    if domain != host:
+        raise PartPayloadInvalid(f"{field}.domain", "must be the URL's own host")
+    if (
+        not isinstance(title, str)
+        or title == ""
+        or title.strip() != title
+        or any(ord(character) < 32 or ord(character) == 127 for character in title)
+        or _TITLE_AMBIGUOUS.search(title) is not None
+        or len(title.encode("utf-8")) > WEB_SEARCH_MAX_SOURCE_TITLE_UTF8_BYTES
+    ):
+        raise PartPayloadInvalid(f"{field}.title", "must be non-empty, trimmed, control-free and bounded")
+    if not isinstance(source["opened"], bool) or not isinstance(source["cited"], bool):
+        raise PartPayloadInvalid(field, "opened and cited must be booleans")
+    return url
+
+
 def _validate_web_search(payload: Mapping[str, Any]) -> None:
     """The exact completed-search display fact produced from the tool ledger."""
     _require_exact_keys(
         payload,
         required=frozenset({"query", "state"}),
-        optional=frozenset(),
+        optional=frozenset({"sources"}),
     )
     _require_text(payload, "query", maximum=4_096)
     query = payload["query"]
@@ -482,6 +548,13 @@ def _validate_web_search(payload: Mapping[str, Any]) -> None:
         raise PartPayloadInvalid("query", "must be non-empty, trimmed and control-free")
     if payload["state"] != "complete":
         raise PartPayloadInvalid("state", "must be complete")
+    if "sources" in payload:
+        sources = payload["sources"]
+        if not isinstance(sources, list) or not 1 <= len(sources) <= WEB_SEARCH_MAX_SOURCES:
+            raise PartPayloadInvalid("sources", f"must list 1 to {WEB_SEARCH_MAX_SOURCES} sources")
+        urls = [_validate_web_search_source(source, index) for index, source in enumerate(sources)]
+        if len(set(urls)) != len(urls):
+            raise PartPayloadInvalid("sources", "must not repeat a URL")
 
 
 def _validate_guardrail_notice(payload: Mapping[str, Any]) -> None:
