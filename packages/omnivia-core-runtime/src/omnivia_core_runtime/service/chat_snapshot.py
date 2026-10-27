@@ -461,10 +461,13 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
     row (`read_active_queue_for_actor`) -- never a derived id nothing backs.
     """
     submission, order = entry.submission, entry.order
+    refusal: Exception | None = None
     try:
         attachments = draft_attachment_references(submission.references)
     except StorageError:
-        raise _internal() from None
+        refusal = _internal()
+    if refusal is not None:
+        raise refusal
     document: dict[str, Any] = {
         "workspaceId": submission.workspace_id,
         "conversationId": submission.conversation_id,
@@ -498,10 +501,13 @@ def composer_draft(draft: Draft) -> Mapping[str, Any]:
     rather than projected as either kind. A discarded draft reads back exactly as it
     was emptied: text `""`, references `[]`.
     """
+    refusal: Exception | None = None
     try:
         attachments = draft_attachment_references(draft.references)
     except StorageError:
-        raise _internal() from None
+        refusal = _internal()
+    if refusal is not None:
+        raise refusal
     document: dict[str, Any] = {
         "workspaceId": draft.workspace_id,
         "conversationId": draft.conversation_id,
@@ -863,6 +869,7 @@ def _read_snapshot(
         # relying on it for durable order; fail closed rather than silently
         # answering fewer rows than the actor actually has queued.
         raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_QUEUE_OVERFLOW)
+    refusal: Exception | None = None
     try:
         jobs = _generation_jobs(connection, query, inputs.branch)
         job_ids = [str(document["jobId"]) for _, document in jobs]
@@ -871,7 +878,9 @@ def _read_snapshot(
         # Tampered or non-canonical stored content, an unreadable row or a document
         # the frozen contract rejects: one constant refusal, never a partial snapshot
         # and never the stored text, digest or exception that caused it.
-        raise _internal() from None
+        refusal = _internal()
+    if refusal is not None:
+        raise refusal
     snapshot: dict[str, Any] = {
         "conversation": _conversation(inputs.conversation),
         "path": _path(inputs, inputs.branch, inputs.view_state, job_ids),

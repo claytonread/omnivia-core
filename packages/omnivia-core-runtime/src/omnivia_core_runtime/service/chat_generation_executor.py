@@ -654,6 +654,7 @@ def _attachment_file_part(
     if message.author_id is None:
         # No author means no staged authority to prove the file against.
         raise AttachmentUnavailable("an accepted attachment has no author to prove it against")
+    refusal: Exception | None = None
     try:
         (pinned,) = revalidate_attachments(
             connection,
@@ -666,7 +667,9 @@ def _attachment_file_part(
             rehash=current,
         )
     except AttachmentRefused:
-        raise AttachmentUnavailable("an accepted attachment is no longer available") from None
+        refusal = AttachmentUnavailable("an accepted attachment is no longer available")
+    if refusal is not None:
+        raise refusal
     # `.reference` and never the PinnedAttachment itself: the provider contract's
     # `file` part carries the opaque reference, and the display facts the part payload
     # also holds are for a renderer, not for a model.

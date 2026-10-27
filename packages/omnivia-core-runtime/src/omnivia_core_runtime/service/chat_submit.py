@@ -89,7 +89,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 
 from omnivia_core.chat_contract.v1 import (
     ChatContractDecodeError,
@@ -118,7 +118,10 @@ from omnivia_core_runtime.service.chat_core_reports import (
     CoreReportUnavailable,
     core_report_chart,
 )
-from omnivia_core_runtime.service.chat_interactions import read_chat_wait
+from omnivia_core_runtime.service.chat_interactions import (
+    ChatWaitConflict,
+    read_chat_wait,
+)
 from omnivia_core_runtime.service.chat_part_registry import (
     AGENT_PLAN_PART_TYPE,
     CORE_REPORT_PART_TYPE,
@@ -132,7 +135,6 @@ from omnivia_core_runtime.service.chat_part_registry import (
     validate_registered_payload,
 )
 from omnivia_core_runtime.service.chat_tool_review import (
-    ChatWaitConflict,
     decide_tool_review,
     submit_human_input,
 )
@@ -826,10 +828,13 @@ def _part(item: object, index: int) -> tuple[_Part, str]:
     # contract and an unrecognised one decodes to the inert fallback, so
     # refusing it here would narrow the contract. This closes the gap only
     # where a shape is actually stated -- see `service/chat_part_registry.py`.
+    refusal: Exception | None = None
     try:
         validate_registered_payload(part_type, payload)
     except PartPayloadInvalid as refused:
-        raise _invalid(f"{field}.payload.{refused.field}", refused.rule) from None
+        refusal = _invalid(f"{field}.payload.{refused.field}", refused.rule)
+    if refusal is not None:
+        raise refusal
     canonical = to_canonical_json(
         {"type": part_type, "visibility": visibility, "payload": dict(payload)}
     )
@@ -979,7 +984,12 @@ def _provider_route(command: Mapping[str, Any]) -> _ProviderRoute | None:
     return _ProviderRoute(connection_id=connection_id, model_id=model_id)
 
 
-def _route_columns(route: _ProviderRoute | None) -> dict[str, str | None]:
+class _RouteColumns(TypedDict):
+    provider_connection_id: str | None
+    provider_model_id: str | None
+
+
+def _route_columns(route: _ProviderRoute | None) -> _RouteColumns:
     """The two nullable storage columns a route is written to, both or neither."""
     return {
         "provider_connection_id": None if route is None else route.connection_id,
@@ -1887,6 +1897,7 @@ def _core_report_parts(writer: ChatWriter, parts: Sequence[_Part], now: int) -> 
     directives = [part for part in parts if part.part_type == CORE_REPORT_PART_TYPE]
     if not directives:
         return ()
+    refusal: Exception | None = None
     try:
         payload = core_report_chart(
             writer.connection,
@@ -1896,7 +1907,9 @@ def _core_report_parts(writer: ChatWriter, parts: Sequence[_Part], now: int) -> 
         )
         validate_registered_payload(GENERATIVE_UI_PART_TYPE, payload)
     except (CoreReportUnavailable, PartPayloadInvalid) as refused:
-        raise ChatAggregateConflict(f"this Core report is not available: {refused}") from None
+        refusal = ChatAggregateConflict(f"this Core report is not available: {refused}")
+    if refusal is not None:
+        raise refusal
     return (
         _Part(
             part_type=GENERATIVE_UI_PART_TYPE,
@@ -1978,10 +1991,13 @@ def _submit(request: _SubmitMessage, blobs_root: Path | None = None) -> ChatComm
             # names a different branch cannot be this row's drain.
             if request.branch_id is None or request.branch_id != queued_row.branch_id:
                 raise ChatAggregateConflict(_MESSAGE_QUEUE_ROW)
+            refusal: Exception | None = None
             try:
                 queued_references = draft_attachment_references(queued_row.references)
             except StorageError:
-                raise ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT) from None
+                refusal = ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT)
+            if refusal is not None:
+                raise refusal
             if (
                 not _same_references(queued_references, request.attachment_references)
                 or _queued_content_hash(queued_row.editable_parts)
@@ -2307,6 +2323,7 @@ def _review_decision(request: _ReviewDecision) -> ChatCommand:
         # resource that moved. Mapped onto the seam's own conflict type so each
         # is a clean `conflict` rather than an unexpected error, which is what
         # an unmapped exception escaping a DomainMutation becomes.
+        refusal: Exception | None = None
         try:
             decide_tool_review(
                 writer.connection,
@@ -2326,7 +2343,9 @@ def _review_decision(request: _ReviewDecision) -> ChatCommand:
                 writer=writer,
             )
         except ChatWaitConflict as refused:
-            raise ChatAggregateConflict(str(refused)) from None
+            refusal = ChatAggregateConflict(str(refused))
+        if refusal is not None:
+            raise refusal
         return _ack(
             REVIEW_DECISION_COMMAND,
             request.command_id,
@@ -2352,6 +2371,7 @@ def _submit_human_input(request: _SubmitHumanInput) -> ChatCommand:
         )
         if wait is None:
             raise ChatAggregateConflict("the wait is not open in this workspace")
+        refusal: Exception | None = None
         try:
             submit_human_input(
                 writer.connection,
@@ -2368,7 +2388,9 @@ def _submit_human_input(request: _SubmitHumanInput) -> ChatCommand:
                 writer=writer,
             )
         except ChatWaitConflict as refused:
-            raise ChatAggregateConflict(str(refused)) from None
+            refusal = ChatAggregateConflict(str(refused))
+        if refusal is not None:
+            raise refusal
         return _ack(
             SUBMIT_HUMAN_INPUT_COMMAND,
             request.command_id,
@@ -4364,6 +4386,7 @@ def _admit_attachments(
     this build before a model sees it. The refusal is the coarse governed conflict and
     never says which of the files was the cause.
     """
+    refusal: Exception | None = None
     try:
         return revalidate_attachments(
             writer.connection,
@@ -4376,7 +4399,9 @@ def _admit_attachments(
             rehash=True,
         )
     except AttachmentRefused as refused:
-        raise ChatAggregateConflict(_ATTACHMENT_REFUSALS[refused.reason]) from None
+        refusal = ChatAggregateConflict(_ATTACHMENT_REFUSALS[refused.reason])
+    if refusal is not None:
+        raise refusal
 
 
 def _draft_attachment_entries(

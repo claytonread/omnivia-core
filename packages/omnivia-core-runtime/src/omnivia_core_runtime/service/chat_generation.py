@@ -1745,12 +1745,15 @@ def append_provider_structured_output(
             for candidate in criteria:
                 weighted_total += candidate["score"] * candidate["weightBps"] / 10_000
             normalized_output["total"] = weighted_total
+    refusal: Exception | None = None
     try:
         output_document = to_canonical_json(normalized_output).encode("utf-8")
     except ChatContractDecodeError:
-        raise UnsupportedProviderEvent(
+        refusal = UnsupportedProviderEvent(
             "provider event field 'output' is not canonicalisable"
-        ) from None
+        )
+    if refusal is not None:
+        raise refusal
     if len(output_document) > MAX_STRUCTURED_OUTPUT_BYTES:
         raise UnsupportedProviderEvent(
             "provider event field 'output' exceeds the structured-output byte bound"
@@ -1804,12 +1807,15 @@ def append_provider_structured_output(
         part_type = SPEC_SHEET_PART_TYPE
         part_payload = normalized_output
         schema_label = "spec-sheet"
+    refusal = None
     try:
         validate_registered_payload(part_type, part_payload)
     except PartPayloadInvalid:
-        raise UnsupportedProviderEvent(
+        refusal = UnsupportedProviderEvent(
             f"provider event field 'output' does not match the {schema_label} schema"
-        ) from None
+        )
+    if refusal is not None:
+        raise refusal
 
     if output_ordinal != 0:
         raise GenerationSequenceGap(

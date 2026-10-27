@@ -685,10 +685,13 @@ def _require_nonempty_text(
     maximum: int,
     prefix: str = "",
 ) -> None:
+    refusal: Exception | None = None
     try:
         _require_text(payload, field, maximum=maximum)
     except PartPayloadInvalid as error:
-        raise PartPayloadInvalid(f"{prefix}{error.field}", error.rule) from None
+        refusal = PartPayloadInvalid(f"{prefix}{error.field}", error.rule)
+    if refusal is not None:
+        raise refusal
     if payload[field] == "":
         raise PartPayloadInvalid(f"{prefix}{field}", "must be non-empty")
 
@@ -767,10 +770,13 @@ def _require_diagram_text(
     prefix: str = "",
 ) -> None:
     """Require the renderer's exact non-empty, trimmed, control-free text."""
+    refusal: Exception | None = None
     try:
         _require_text(payload, field, maximum=maximum)
     except PartPayloadInvalid as error:
-        raise PartPayloadInvalid(f"{prefix}{error.field}", error.rule) from None
+        refusal = PartPayloadInvalid(f"{prefix}{error.field}", error.rule)
+    if refusal is not None:
+        raise refusal
     value = payload[field]
     if (
         value == ""
@@ -868,12 +874,15 @@ def _activity_day(value: Any, field: str) -> date:
     """Require Platform's exact canonical UTC calendar-day spelling."""
     if not isinstance(value, str):
         raise PartPayloadInvalid(field, "must be a canonical UTC YYYY-MM-DD date")
+    refusal: Exception | None = None
     try:
         parsed = date.fromisoformat(value)
     except ValueError:
-        raise PartPayloadInvalid(
+        refusal = PartPayloadInvalid(
             field, "must be a canonical UTC YYYY-MM-DD date"
-        ) from None
+        )
+    if refusal is not None:
+        raise refusal
     if parsed.year < 1970 or parsed.isoformat() != value:
         raise PartPayloadInvalid(
             field, "must be a canonical UTC YYYY-MM-DD date from 1970 through 9999"
@@ -961,10 +970,13 @@ def _math_text(
     """Validate one renderer-visible math string and return its UTF-8 size."""
     if not isinstance(value, str):
         raise PartPayloadInvalid(field, "must be a string")
+    refusal: Exception | None = None
     try:
         size = len(value.encode("utf-8"))
     except UnicodeEncodeError:
-        raise PartPayloadInvalid(field, "must be valid UTF-8 text") from None
+        refusal = PartPayloadInvalid(field, "must be valid UTF-8 text")
+    if refusal is not None:
+        raise refusal
     if size > maximum:
         raise PartPayloadInvalid(field, f"must be at most {maximum} UTF-8 bytes")
     if (
