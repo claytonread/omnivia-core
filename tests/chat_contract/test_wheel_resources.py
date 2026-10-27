@@ -204,9 +204,9 @@ def test_the_installed_package_reports_the_governed_contract_identity(
     assert installed_report["protocol_version"] == "3.0"
     assert installed_report["contract_version"] == "1.0.0-rc.1"
     assert installed_report["approval_id"] == "GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001"
-    # 30 -> 32: C8's ReviewDecision and SubmitHumanInput, proved out of the
-    # INSTALLED artifact rather than the source tree.
-    assert installed_report["command_count"] == 32
+    # 30 -> 32: C8's ReviewDecision and SubmitHumanInput; 33: SetMessageFeedback.
+    # Proved out of the INSTALLED artifact rather than the source tree.
+    assert installed_report["command_count"] == 33
 
 
 def test_the_packaged_schemas_import_from_the_installed_artifact(

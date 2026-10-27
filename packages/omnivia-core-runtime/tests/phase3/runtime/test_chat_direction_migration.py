@@ -668,7 +668,14 @@ def test_a_populated_0068_workspace_reaches_0069_with_every_prior_fact_intact(
         try:
             foundation.seed_every_table(holder)
             before = t34.event_rows(holder.connection)
-            jobs_before = holder.connection.execute(f"SELECT * FROM {JOBS}").fetchall()
+            # Named columns: a later migration (0074) adds job columns, and this
+            # file only owns that 0069 leaves the existing ones intact.
+            job_columns = ", ".join(
+                str(r[1]) for r in holder.connection.execute(f"PRAGMA table_info({JOBS})")
+            )
+            jobs_before = holder.connection.execute(
+                f"SELECT {job_columns} FROM {JOBS}"
+            ).fetchall()
         finally:
             holder.connection.close()
     assert len(before) == 3
@@ -680,7 +687,7 @@ def test_a_populated_0068_workspace_reaches_0069_with_every_prior_fact_intact(
     try:
         assert applied_migrations(connection)[MIGRATION_VERSION] == MIGRATION.checksum
         assert t34.event_rows(connection) == before
-        assert connection.execute(f"SELECT * FROM {JOBS}").fetchall() == jobs_before
+        assert connection.execute(f"SELECT {job_columns} FROM {JOBS}").fetchall() == jobs_before
         for table in TABLES:
             assert count(connection, table) == 0
         assert {
